@@ -1,0 +1,59 @@
+# Compose-файл на будущее: пригодится для деплоя и для запуска базы одной командой.
+# Для локальной разработки он НЕ обязателен — PostgreSQL 16 уже установлен на машине.
+#
+# Поднять только базу:        docker compose up -d db
+# Поднять всё (бэк + фронт):  docker compose up --build
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: kr_tests_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kr_tests
+    ports:
+      # Слева порт на твоей машине, справа — внутри контейнера.
+      # 5433, чтобы не конфликтовать с локально установленным PostgreSQL на 5432.
+      - "5433:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Файлы из этой папки PostgreSQL выполняет сам при ПЕРВОМ создании базы.
+      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kr_tests"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile   # Dockerfile добавим на шаге деплоя
+    container_name: kr_tests_backend
+    environment:
+      # Внутри docker-сети база доступна по имени сервиса "db" и порту 5432.
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/kr_tests
+      CORS_ORIGINS: http://localhost:5174
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["full"]   # поднимается только при `docker compose --profile full up`
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile   # добавим на шаге деплоя
+    container_name: kr_tests_frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "5174:5174"
+    depends_on:
+      - backend
+    profiles: ["full"]
+
+volumes:
+  db_data:   # данные базы переживают перезапуск контейнера

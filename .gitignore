@@ -1,0 +1,40 @@
+# ===== Python / FastAPI =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Node / Vite =====
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# ===== Секреты и локальная конфигурация =====
+# .env хранит пароль от базы — в git он попадать не должен.
+# В репозитории лежат только .env.example / .env.local.example.
+.env
+.env.local
+.env.*.local
+!.env.example
+!*.env.example
+
+# ===== Логи =====
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ===== Редакторы и ОС =====
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
