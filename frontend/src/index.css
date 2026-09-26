@@ -96,3 +96,199 @@ code {
 .error p {
   margin: 8px 0 0;
 }
+
+/* ===================== Кнопки и ссылки ===================== */
+
+.btn {
+  display: inline-block;
+  padding: 9px 18px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn--primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.backlink {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.backlink:hover {
+  text-decoration: underline;
+}
+
+/* Строка, в которой кнопки и подписи стоят рядом и переносятся на узком экране. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+/* ===================== Поля ввода ===================== */
+
+.label {
+  display: block;
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.textarea:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.linkbox {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9rem;
+}
+
+.copied {
+  color: var(--ok);
+  font-size: 0.9rem;
+}
+
+/* ===================== Ошибки ===================== */
+
+.alert {
+  margin-top: 20px;
+  padding: 16px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+
+.alert--error {
+  border-color: var(--bad);
+}
+
+.alert h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--bad);
+}
+
+.alert ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.92rem;
+}
+
+/* ===================== Превью контрольной ===================== */
+
+.card + .card,
+.card + .alert {
+  margin-top: 20px;
+}
+
+.card--success {
+  border-color: var(--ok);
+}
+
+.questions {
+  margin: 16px 0 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 20px;
+}
+
+.question__text {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+.options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.94rem;
+}
+
+/* Правильный вариант: зелёная рамка и фон. Один цвет — плохой указатель,
+   поэтому рядом ещё и подпись «✓ верный» из разметки. */
+.option--correct {
+  border-color: var(--ok);
+  background: rgba(23, 145, 63, 0.1);
+}
+
+.option__letter {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.option__text {
+  flex: 1 1 auto;
+}
+
+.option__mark {
+  flex: 0 0 auto;
+  color: var(--ok);
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}

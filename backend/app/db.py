@@ -56,6 +56,22 @@ def init_pool() -> ConnectionPool:
     return new_pool
 
 
+def get_pool() -> ConnectionPool:
+    """
+    Возвращает пул соединений для работы с базой.
+
+    Если при старте приложения база была недоступна, пула нет — тогда пробуем
+    подключиться прямо сейчас. Удобно, когда PostgreSQL запустили уже после бэкенда.
+    Если база по-прежнему не отвечает, функция бросит исключение, а роутер
+    превратит его в понятный ответ 503 (см. app/routers/tests.py).
+    """
+    if pool is None:
+        init_pool()
+
+    assert pool is not None  # после init_pool пул точно есть
+    return pool
+
+
 def close_pool() -> None:
     """Аккуратно закрывает все соединения при остановке приложения."""
     global pool
