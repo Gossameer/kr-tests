@@ -12,6 +12,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 import { createTest } from '../api'
+import CopyLink from '../components/CopyLink'
 import { parseTestJson } from '../lib/parseTestJson'
 import type { CreatedTest, TestDraft } from '../types'
 
@@ -26,8 +27,6 @@ export default function CreateTestPage() {
   const [created, setCreated] = useState<CreatedTest | null>(null)
   // true, пока идёт запрос на бэкенд — чтобы заблокировать кнопку.
   const [publishing, setPublishing] = useState(false)
-  // Показывает «Скопировано» рядом с кнопкой копирования.
-  const [copied, setCopied] = useState(false)
 
   /**
    * Любая правка текста сбрасывает превью и результат.
@@ -70,20 +69,10 @@ export default function CreateTestPage() {
     }
   }
 
-  // Ссылка для учеников: берём адрес текущей страницы, чтобы он всегда был верным.
+  // Ссылки собираем от адреса текущей страницы, чтобы они всегда были верными.
   const studentUrl = created ? `${window.location.origin}/t/${created.code}` : ''
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(studentUrl)
-      setCopied(true)
-      // Через две секунды убираем надпись «Скопировано».
-      window.setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Браузер может запретить доступ к буферу обмена — тогда просим скопировать вручную.
-      setErrors(['Браузер не дал скопировать автоматически — выделите ссылку и скопируйте вручную.'])
-    }
-  }
+  // Секретная ссылка на результаты:длинный токен вместо пароля, пока входа для учителя нет.
+  const resultsUrl = created ? `${window.location.origin}/r/${created.results_token}` : ''
 
   function handleReset() {
     setRaw('')
@@ -210,18 +199,26 @@ export default function CreateTestPage() {
             «{created.title}», вопросов: {created.questions_count}. Код: <code>{created.code}</code>
           </p>
 
-          <p className="label">Ссылка для учеников</p>
-          <div className="row">
-            {/* readOnly-поле, а не просто текст: так ссылку удобно выделить целиком. */}
-            <input className="linkbox" value={studentUrl} readOnly />
-            <button type="button" className="btn btn--primary" onClick={handleCopy}>
-              Скопировать
-            </button>
-            {copied && <span className="copied">Скопировано</span>}
-          </div>
+          <CopyLink
+            label="Для учеников"
+            url={studentUrl}
+            hint="Эту ссылку отправьте классу — по ней открывается сам тест."
+          />
 
-          <p className="muted">
-            Страницу ученика делаем на следующем шаге — пока по этой ссылке откроется заглушка.
+          <CopyLink
+            secret
+            label="Результаты — только для вас, не отправляйте ученикам"
+            url={resultsUrl}
+            hint={
+              'По этой ссылке видны все работы и правильные ответы. ' +
+              'Сохраните её в закладки: заново её показать негде.'
+            }
+          />
+
+          <p className="row">
+            <a className="btn btn--ghost" href={resultsUrl}>
+              Открыть результаты
+            </a>
           </p>
 
           <div className="row">

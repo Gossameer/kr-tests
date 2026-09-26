@@ -4,10 +4,12 @@
  */
 
 import type {
+  AttemptDetail,
   AttemptPayload,
   AttemptResult,
   CreatedTest,
   PublicTest,
+  ResultsOverview,
   SavedTest,
   TestDraft,
 } from './types'
@@ -116,4 +118,43 @@ export async function submitAttempt(
   }
 
   return (await response.json()) as AttemptResult
+}
+
+/* ===================== Результаты для учителя ===================== */
+
+/** GET /api/results/{token} — таблица сдавших и сводка по вопросам. */
+export async function fetchResults(token: string): Promise<ResultsOverview> {
+  const response = await fetch(`${API_URL}/api/results/${encodeURIComponent(token)}`)
+
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
+
+  return (await response.json()) as ResultsOverview
+}
+
+/** GET /api/results/{token}/attempts/{id} — разбор одной работы. */
+export async function fetchAttemptDetail(
+  token: string,
+  attemptId: number,
+): Promise<AttemptDetail> {
+  const response = await fetch(
+    `${API_URL}/api/results/${encodeURIComponent(token)}/attempts/${attemptId}`,
+  )
+
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
+
+  return (await response.json()) as AttemptDetail
+}
+
+/**
+ * Адрес выгрузки в Excel.
+ *
+ * Файл не скачиваем через fetch: обычная ссылка проще и сразу даёт
+ * браузеру правильное имя файла из заголовка Content-Disposition.
+ */
+export function resultsExportUrl(token: string): string {
+  return `${API_URL}/api/results/${encodeURIComponent(token)}/export.xlsx`
 }

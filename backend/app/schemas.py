@@ -124,6 +124,9 @@ class TestCreated(BaseModel):
 
     id: int
     code: str = Field(description="Короткий код для ссылки ученикам")
+    results_token: str = Field(
+        description="Длинный секрет для ссылки на результаты — только для учителя"
+    )
     title: str
     questions_count: int
 
@@ -255,3 +258,70 @@ class AttemptResult(BaseModel):
     score: int
     max_score: int
     results: list[QuestionResult]
+
+
+# =====================================================================
+# Результаты для учителя (доступ по секретной ссылке /r/<results_token>)
+# =====================================================================
+
+
+class AttemptRow(BaseModel):
+    """Одна строка таблицы сдавших."""
+
+    attempt_id: int
+    student_name: str
+    student_class: str
+    score: int
+    max_score: int
+    # Процент считаем на сервере, чтобы в таблице и в Excel было одно и то же число.
+    percent: int
+    finished_at: datetime | None
+
+
+class QuestionStat(BaseModel):
+    """Сводка по одному вопросу: как класс с ним справился."""
+
+    question_id: int
+    position: int
+    text: str
+    correct_count: int
+    wrong_count: int
+    skipped_count: int
+
+
+class ResultsOverview(BaseModel):
+    """Ответ GET /api/results/{results_token}."""
+
+    title: str
+    teacher_name: str
+    # Ученический код показываем, чтобы учитель мог заодно скопировать ссылку классу.
+    code: str
+    questions_count: int
+    attempts_count: int
+    attempts: list[AttemptRow]
+    question_stats: list[QuestionStat]
+
+
+class AttemptDetailItem(BaseModel):
+    """Ответ ученика на один вопрос — здесь правильный вариант показывать МОЖНО."""
+
+    question_id: int
+    position: int
+    question_text: str
+    chosen_option_text: str | None
+    correct_option_text: str | None
+    answered: bool
+    is_correct: bool
+
+
+class AttemptDetail(BaseModel):
+    """Ответ GET /api/results/{results_token}/attempts/{attempt_id}."""
+
+    attempt_id: int
+    student_name: str
+    student_class: str
+    score: int
+    max_score: int
+    percent: int
+    finished_at: datetime | None
+    items: list[AttemptDetailItem]

@@ -34,6 +34,17 @@ def generate_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
 
+def generate_results_token() -> str:
+    """
+    Длинный секрет для ссылки на результаты, например "xQ7...".
+
+    token_urlsafe(32) — это 32 случайных байта (256 бит) в виде строки,
+    пригодной для адреса. Перебрать такую ссылку нельзя, поэтому она и
+    работает вместо пароля, пока авторизации учителя нет.
+    """
+    return secrets.token_urlsafe(32)
+
+
 def db_unavailable() -> HTTPException:
     """Одинаковый понятный ответ, когда база не отвечает."""
     return HTTPException(
@@ -62,6 +73,10 @@ def create_test(payload: TestCreate) -> TestCreated:
         logger.error("Нет соединения с базой: %s", exc)
         raise db_unavailable() from exc
 
+    # Токен результатов достаточно сгенерировать один раз: повторов у него
+    # не бывает, в отличие от короткого кода.
+    results_token = generate_results_token()
+
     for attempt in range(CODE_ATTEMPTS):
         code = generate_code()
 
@@ -73,11 +88,13 @@ def create_test(payload: TestCreate) -> TestCreated:
                 # 1. Сама контрольная. RETURNING id сразу отдаёт присвоенный базой id.
                 test_row = conn.execute(
                     """
-                    INSERT INTO tests (title, teacher_name, share_token, is_published)
-                    VALUES (%s, %s, %s, TRUE)
+                    INSERT INTO tests (
+                        title, teacher_name, share_token, results_token, is_published
+                    )
+                    VALUES (%s, %s, %s, %s, TRUE)
                     RETURNING id
                     """,
-                    (payload.title, payload.teacher_name, code),
+                    (payload.title, payload.teacher_name, code, results_token),
                 ).fetchone()
                 test_id = test_row["id"]
 
@@ -116,6 +133,7 @@ def create_test(payload: TestCreate) -> TestCreated:
             return TestCreated(
                 id=test_id,
                 code=code,
+                results_token=results_token,
                 title=payload.title,
                 questions_count=len(payload.questions),
             )

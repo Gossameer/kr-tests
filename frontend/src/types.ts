@@ -18,6 +18,8 @@ export type TestDraft = {
 export type CreatedTest = {
   id: number
   code: string
+  /** Длинный секрет для ссылки на результаты — показывать только учителю. */
+  results_token: string
   title: string
   questions_count: number
 }
@@ -109,4 +111,61 @@ export type StoredAttempt = {
   title: string
   result: AttemptResult
   questions: { id: number; text: string; position: number }[]
+}
+
+/* ===================== Результаты для учителя ===================== */
+
+/** Строка таблицы сдавших. */
+export type AttemptRow = {
+  attempt_id: number
+  student_name: string
+  student_class: string
+  score: number
+  max_score: number
+  percent: number
+  finished_at: string | null
+}
+
+/** Сводка по одному вопросу. */
+export type QuestionStat = {
+  question_id: number
+  position: number
+  text: string
+  correct_count: number
+  wrong_count: number
+  skipped_count: number
+}
+
+/** Ответ GET /api/results/{token} */
+export type ResultsOverview = {
+  title: string
+  teacher_name: string
+  code: string
+  questions_count: number
+  attempts_count: number
+  attempts: AttemptRow[]
+  question_stats: QuestionStat[]
+}
+
+/** Один вопрос в разборе работы. Здесь правильный вариант виден — это экран учителя. */
+export type AttemptDetailItem = {
+  question_id: number
+  position: number
+  question_text: string
+  chosen_option_text: string | null
+  correct_option_text: string | null
+  answered: boolean
+  is_correct: boolean
+}
+
+/** Ответ GET /api/results/{token}/attempts/{id} */
+export type AttemptDetail = {
+  attempt_id: number
+  student_name: string
+  student_class: string
+  score: number
+  max_score: number
+  percent: number
+  finished_at: string | null
+  items: AttemptDetailItem[]
 }
