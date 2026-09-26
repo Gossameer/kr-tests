@@ -3,7 +3,14 @@
  * Все запросы к API собраны здесь, чтобы страницы не знали про fetch и адреса.
  */
 
-import type { CreatedTest, SavedTest, TestDraft } from './types'
+import type {
+  AttemptPayload,
+  AttemptResult,
+  CreatedTest,
+  PublicTest,
+  SavedTest,
+  TestDraft,
+} from './types'
 
 // import.meta.env — так Vite отдаёт переменные из .env.local.
 // Если переменной нет, подставляем локальный адрес бэкенда.
@@ -75,4 +82,38 @@ export async function fetchTest(code: string): Promise<SavedTest> {
   }
 
   return (await response.json()) as SavedTest
+}
+
+/* ===================== Публичная часть: экран ученика ===================== */
+
+/** GET /api/public/tests/{code} — тест для прохождения, без правильных ответов. */
+export async function fetchPublicTest(code: string): Promise<PublicTest> {
+  const response = await fetch(`${API_URL}/api/public/tests/${encodeURIComponent(code)}`)
+
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
+
+  return (await response.json()) as PublicTest
+}
+
+/** POST /api/public/tests/{code}/attempts — сдать работу и получить результат. */
+export async function submitAttempt(
+  code: string,
+  payload: AttemptPayload,
+): Promise<AttemptResult> {
+  const response = await fetch(
+    `${API_URL}/api/public/tests/${encodeURIComponent(code)}/attempts`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )
+
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
+
+  return (await response.json()) as AttemptResult
 }

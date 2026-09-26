@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import db
 from app.config import get_settings
 from app.errors import validation_error_handler
-from app.routers import health, tests
+from app.routers import health, public, tests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -72,6 +72,7 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 # Роутеры — способ разложить эндпоинты по файлам вместо одного длинного main.py.
 app.include_router(health.router)
 app.include_router(tests.router)
+app.include_router(public.router)
 
 
 @app.get("/", tags=["service"])

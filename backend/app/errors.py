@@ -23,6 +23,9 @@ FIELD_NAMES = {
     "correct": "номер правильного ответа (correct)",
     "text": "текст (text)",
     "teacher_name": "имя учителя (teacher_name)",
+    "student_name": "фамилия и имя (student_name)",
+    "student_class": "класс (student_class)",
+    "answers": "ответы (answers)",
 }
 
 # Человеческие формулировки для стандартных типов ошибок Pydantic.

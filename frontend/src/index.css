@@ -292,3 +292,127 @@ code {
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* ===================== Экран ученика ===================== */
+
+/* Ученики открывают ссылку с телефона, поэтому колонка уже и отступы меньше. */
+.page--student {
+  max-width: 560px;
+  padding-top: 28px;
+}
+
+.input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  /* 16px — ниже этого размера мобильный Safari сам увеличивает страницу при фокусе. */
+  font-size: 16px;
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.label--spaced {
+  margin-top: 16px;
+}
+
+.field-error {
+  margin: 10px 0 0;
+  color: var(--bad);
+  font-size: 0.9rem;
+}
+
+/* Вариант ответа — большая область нажатия, удобная на телефоне. */
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 1rem;
+  /* Убирает серую вспышку при нажатии на мобильных. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+.choice:hover {
+  border-color: var(--muted);
+}
+
+.choice--picked {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.choice input[type='radio'] {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+
+/* Крупный итог «Верно 2 из 3». */
+.score {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.mark {
+  font-weight: 700;
+}
+
+.mark--ok {
+  color: var(--ok);
+}
+
+.mark--bad {
+  color: var(--bad);
+}
+
+.btn--wide {
+  min-height: 46px;
+  font-size: 1rem;
+}
+
+/* ===================== Узкие экраны ===================== */
+
+@media (max-width: 560px) {
+  .page {
+    padding: 24px 14px 40px;
+  }
+
+  h1 {
+    font-size: 1.45rem;
+  }
+
+  .card {
+    padding: 16px;
+    border-radius: 10px;
+  }
+
+  .questions {
+    padding-left: 0;
+    /* На телефоне нумерация из <ol> занимает место — номер выводим в тексте вопроса. */
+    list-style: none;
+  }
+
+  /* Кнопки во всю ширину — по ним проще попасть пальцем. */
+  .btn--wide {
+    width: 100%;
+  }
+
+  .linkbox {
+    flex: 1 1 100%;
+  }
+}

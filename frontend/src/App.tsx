@@ -3,31 +3,18 @@
  * Сам <BrowserRouter> подключён в main.tsx.
  */
 
-import { Route, Routes, useParams } from 'react-router'
+import { Route, Routes } from 'react-router'
 import CreateTestPage from './pages/CreateTestPage'
 import HomePage from './pages/HomePage'
-
-/**
- * Заглушка страницы ученика. Нужна только чтобы ссылка из «Опубликовать»
- * не открывала пустоту. Настоящая страница прохождения теста — следующий шаг.
- */
-function StudentStub() {
-  const { code } = useParams()
-
-  return (
-    <main className="page">
-      <h1>Контрольная {code}</h1>
-      <p className="lead">Страница прохождения теста появится на следующем шаге.</p>
-    </main>
-  )
-}
+import StudentTestPage from './pages/StudentTestPage'
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/create" element={<CreateTestPage />} />
-      <Route path="/t/:code" element={<StudentStub />} />
+      {/* Ссылка для учеников: /t/<код контрольной> */}
+      <Route path="/t/:code" element={<StudentTestPage />} />
       {/* Любой другой адрес — короткое понятное сообщение вместо пустой страницы. */}
       <Route
         path="*"

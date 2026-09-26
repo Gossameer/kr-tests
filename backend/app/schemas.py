@@ -159,3 +159,99 @@ class TestOut(BaseModel):
     is_published: bool
     created_at: datetime
     questions: list[QuestionOut]
+
+
+# =====================================================================
+# Публичная часть: то, что видит и присылает УЧЕНИК
+#
+# Главное правило этого блока: ни одна схема здесь не содержит
+# признака правильного ответа. Что попало в схему — то уедет в браузер
+# ученика, где это легко посмотреть через «Инспектор».
+# =====================================================================
+
+MAX_STUDENT_NAME_LEN = 120
+MAX_STUDENT_CLASS_LEN = 40
+
+
+class PublicOptionOut(BaseModel):
+    """Вариант ответа для ученика: только id и текст, БЕЗ is_correct."""
+
+    id: int
+    text: str
+
+
+class PublicQuestionOut(BaseModel):
+    id: int
+    text: str
+    position: int
+    options: list[PublicOptionOut]
+
+
+class PublicTestOut(BaseModel):
+    """Контрольная для прохождения. Правильных ответов здесь нет."""
+
+    code: str
+    title: str
+    teacher_name: str
+    questions: list[PublicQuestionOut]
+
+
+class AttemptCreate(BaseModel):
+    """
+    Сданная работа.
+
+    answers — словарь {id вопроса: id выбранного варианта}.
+    Вопросы, которых нет в словаре, считаются пропущенными (это разрешено).
+    """
+
+    student_name: str
+    student_class: str
+    answers: dict[int, int] = {}
+
+    @field_validator("student_name")
+    @classmethod
+    def check_name(cls, value: str) -> str:
+        cleaned = " ".join(value.split())  # убираем двойные пробелы внутри
+        if not cleaned:
+            raise ValueError("укажите фамилию и имя")
+        if len(cleaned) > MAX_STUDENT_NAME_LEN:
+            raise ValueError(f"слишком длинное, максимум {MAX_STUDENT_NAME_LEN} символов")
+        return cleaned
+
+    @field_validator("student_class")
+    @classmethod
+    def check_class(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("укажите класс")
+        if len(cleaned) > MAX_STUDENT_CLASS_LEN:
+            raise ValueError(f"слишком длинное, максимум {MAX_STUDENT_CLASS_LEN} символов")
+        return cleaned
+
+
+class QuestionResult(BaseModel):
+    """
+    Итог по одному вопросу.
+
+    Здесь намеренно НЕТ поля с правильным вариантом: ученик узнаёт только,
+    угадал он или нет. Иначе достаточно сдать работу один раз, чтобы
+    получить все ответы и передать их другим.
+    """
+
+    question_id: int
+    position: int
+    # Выбрал ли ученик вариант вообще (false = вопрос пропущен).
+    answered: bool
+    # Верен ли выбранный вариант.
+    is_correct: bool
+
+
+class AttemptResult(BaseModel):
+    """Ответ на POST /api/public/tests/{code}/attempts."""
+
+    attempt_id: int
+    student_name: str
+    student_class: str
+    score: int
+    max_score: int
+    results: list[QuestionResult]
