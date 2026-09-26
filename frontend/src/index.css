@@ -1,27 +1,90 @@
-/* Минимальные стили заглушки. Дизайн-систему добавим позже. */
+/* =====================================================================
+   КР — сервис контрольных работ. Единый файл стилей.
+
+   Сторонних библиотек нет намеренно: весь набор элементов небольшой,
+   а свой CSS проще читать и править новичку.
+
+   Порядок разделов:
+     1. Палитра и базовые правила
+     2. Шапка и каркас страницы
+     3. Типографика
+     4. Кнопки
+     5. Поля ввода
+     6. Карточки, плашки, пустые состояния
+     7. Вкладки и редактор вопросов
+     8. Вопросы и варианты (превью, страница ученика)
+     9. Таблица результатов и сводка
+    10. Главная страница: список контрольных
+    11. Узкие экраны (телефон)
+   ===================================================================== */
+
+/* =====================================================================
+   1. Палитра и базовые правила
+   ===================================================================== */
 
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --text: #1c1f23;
-  --muted: #6b7280;
-  --border: #e3e6ea;
-  --ok: #17913f;
-  --bad: #c62f2f;
+  /* Основной цвет — спокойный синий: это рабочий инструмент, а не витрина. */
+  --brand: #2f56c8;
+  --brand-dark: #24459f;
+  --brand-soft: rgba(47, 86, 200, 0.1);
 
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ok: #157f3c;
+  --ok-soft: rgba(21, 127, 60, 0.12);
+  --bad: #c22f2f;
+  --bad-soft: rgba(194, 47, 47, 0.1);
+  /* Тёплый цвет для секретных ссылок: отличается и от «хорошо», и от «ошибка». */
+  --warn: #9a5b06;
+  --warn-soft: rgba(154, 91, 6, 0.1);
+
+  --bg: #f4f6fa;
+  --card: #ffffff;
+  --text: #1b1f27;
+  --muted: #5f6775;
+  --border: #dde1e9;
+  --border-strong: #c3c9d6;
+
+  /* Отступы держим на одной сетке, иначе страницы «съезжают» друг от друга. */
+  --gap-xs: 6px;
+  --gap-s: 10px;
+  --gap-m: 16px;
+  --gap-l: 24px;
+  --gap-xl: 36px;
+
+  --radius: 10px;
+  --radius-l: 14px;
+
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
   color: var(--text);
   background: var(--bg);
+  /* Чуть плотнее обычного: много текста в списках вопросов. */
+  line-height: 1.5;
 }
 
+/* Тёмная тема: меняем только значения переменных, все правила ниже работают как есть. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #15181c;
-    --card: #1e2227;
-    --text: #e9ecef;
-    --muted: #9aa3ad;
-    --border: #2b3138;
+    --brand: #6f91ef;
+    --brand-dark: #85a2f4;
+    --brand-soft: rgba(111, 145, 239, 0.16);
+
+    --ok: #4ec27b;
+    --ok-soft: rgba(78, 194, 123, 0.16);
+    --bad: #f07575;
+    --bad-soft: rgba(240, 117, 117, 0.14);
+    --warn: #e0a458;
+    --warn-soft: rgba(224, 164, 88, 0.14);
+
+    --bg: #14171d;
+    --card: #1d212a;
+    --text: #e8ebf1;
+    --muted: #9aa3b4;
+    --border: #2c323e;
+    --border-strong: #3c4454;
   }
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
@@ -29,224 +92,660 @@ body {
   background: var(--bg);
 }
 
-.page {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 48px 16px;
+/* Видимая рамка фокуса: без неё невозможно работать с клавиатуры. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
+/* =====================================================================
+   2. Шапка и каркас страницы
+   ===================================================================== */
+
+.app {
+  min-height: 100vh;
+}
+
+.topbar {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar__inner {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 14px 20px;
+}
+
+.topbar__brand {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.topbar__school {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.topbar__dot {
+  color: var(--border-strong);
+}
+
+.topbar__name {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* Основная колонка. Шире — только там, где есть таблица. */
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--gap-xl) 20px 64px;
+}
+
+.page--wide {
+  max-width: 960px;
+}
+
+/* Страница ученика уже: её читают с телефона и в спешке. */
+.page--student {
+  max-width: 600px;
+}
+
+/* =====================================================================
+   3. Типографика
+   ===================================================================== */
+
 h1 {
-  margin: 0 0 8px;
-  font-size: 1.9rem;
+  margin: 0 0 var(--gap-s);
+  font-size: 1.75rem;
+  line-height: 1.25;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+h3 {
+  margin: 0 0 var(--gap-xs);
+  font-size: 1rem;
 }
 
 .lead {
-  margin: 0 0 32px;
+  margin: 0 0 var(--gap-l);
   color: var(--muted);
-}
-
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px 24px;
-}
-
-.card h2 {
-  margin: 0 0 4px;
-  font-size: 1.1rem;
 }
 
 .muted {
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
+}
+
+/* Подсказка под полем: мельче основного текста, но всё ещё читаемая. */
+.hint {
+  margin: var(--gap-xs) 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 code {
-  background: rgba(127, 127, 127, 0.15);
+  background: rgba(127, 127, 127, 0.14);
   border-radius: 4px;
   padding: 1px 5px;
-  font-size: 0.85em;
+  font-size: 0.86em;
 }
 
-.checks {
-  list-style: none;
-  margin: 12px 0 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
+.pre {
+  margin: var(--gap-s) 0 0;
+  padding: var(--gap-m);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+  /* Длинные строки промта переносим, а не прокручиваем. */
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.dot {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  margin-right: 8px;
+.loading {
+  color: var(--muted);
 }
 
-.dot--ok {
-  background: var(--ok);
-}
-
-.dot--bad {
-  background: var(--bad);
-}
-
-.error p {
-  margin: 8px 0 0;
-}
-
-/* ===================== Кнопки и ссылки ===================== */
+/* =====================================================================
+   4. Кнопки
+   ===================================================================== */
 
 .btn {
-  display: inline-block;
-  padding: 9px 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap-xs);
+  min-height: 42px;
+  padding: 10px 18px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius);
+  background: none;
   font: inherit;
   font-size: 0.95rem;
-  cursor: pointer;
   text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, opacity 0.12s;
 }
 
 .btn--primary {
-  background: #2563eb;
-  border-color: #2563eb;
+  background: var(--brand);
+  border-color: var(--brand);
   color: #fff;
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: var(--brand-dark);
+  border-color: var(--brand-dark);
 }
 
 .btn--ghost {
-  background: transparent;
-  border-color: var(--border);
+  border-color: var(--border-strong);
   color: var(--text);
 }
 
 .btn--ghost:hover:not(:disabled) {
-  border-color: var(--muted);
+  background: var(--brand-soft);
+  border-color: var(--brand);
 }
 
+.btn--danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--bad-soft);
+}
+
+.btn--large {
+  min-height: 52px;
+  padding: 14px 28px;
+  font-size: 1.05rem;
+}
+
+.btn--small {
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 0.87rem;
+}
+
+.btn--wide {
+  min-width: 200px;
+}
+
+/* Неактивная кнопка: заметно бледнее и без реакции на наведение. */
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Мелкая кнопка-иконка: удалить, переставить. */
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.iconbtn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.iconbtn--danger:hover:not(:disabled) {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.iconbtn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 .backlink {
   color: var(--muted);
-  text-decoration: none;
   font-size: 0.9rem;
+  text-decoration: none;
 }
 
 .backlink:hover {
+  color: var(--text);
   text-decoration: underline;
 }
 
-/* Строка, в которой кнопки и подписи стоят рядом и переносятся на узком экране. */
+/* Строка с кнопками: переносится на узком экране. */
 .row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  margin-top: 16px;
+  gap: var(--gap-s);
+  margin-top: var(--gap-m);
 }
 
-/* ===================== Поля ввода ===================== */
+.row--tight {
+  margin-top: var(--gap-s);
+}
+
+.row--actions {
+  margin-top: var(--gap-l);
+}
+
+/* =====================================================================
+   5. Поля ввода
+   ===================================================================== */
+
+.fields {
+  display: grid;
+  gap: var(--gap-m);
+  margin-top: var(--gap-m);
+}
+
+/* Поля в одну строку: тема занимает остаток ширины, класс и число — узкие. */
+.fields--inline {
+  grid-template-columns: 1fr auto auto;
+  align-items: end;
+}
+
+.field--narrow {
+  width: 110px;
+}
 
 .label {
   display: block;
-  margin: 0 0 8px;
+  margin: 0 0 var(--gap-xs);
   font-weight: 600;
   font-size: 0.9rem;
 }
 
-.textarea {
+.label--spaced {
+  margin-top: var(--gap-m);
+}
+
+.input,
+.textarea,
+.select {
   width: 100%;
-  box-sizing: border-box;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+  padding: 11px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--card);
   color: var(--text);
+  font-family: inherit;
+  /* 16px — ниже этого размера мобильный Safari увеличивает страницу при фокусе. */
+  font-size: 16px;
+}
+
+.textarea {
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
   font-size: 0.88rem;
   line-height: 1.5;
   resize: vertical;
 }
 
-.textarea:focus {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
+/* Поле текста вопроса — обычный шрифт: это не код, а текст для учеников. */
+.textarea--question {
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+.input:focus,
+.textarea:focus,
+.select:focus {
+  border-color: var(--brand);
+  outline: 2px solid var(--brand-soft);
+  outline-offset: 0;
+}
+
+/* Галочка с текстом: вся строка — область нажатия. */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gap-s);
+  margin-top: var(--gap-m);
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.check input[type='checkbox'] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--brand);
+}
+
+.check .hint {
+  display: inline;
+  margin: 0;
+}
+
+.field-error {
+  margin: var(--gap-s) 0 0;
+  color: var(--bad);
+  font-size: 0.9rem;
+}
+
+/* Ссылка в поле «только для чтения» + кнопка копирования. */
+.linkblock {
+  margin-top: var(--gap-m);
+  padding: var(--gap-m);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Секретная ссылка: тёплая рамка, чтобы её нельзя было спутать с ученической. */
+.linkblock--secret {
+  border-color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .linkbox {
-  flex: 1 1 260px;
+  flex: 1 1 240px;
   min-width: 0;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--card);
   color: var(--text);
   font-family: ui-monospace, Consolas, monospace;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 .copied {
   color: var(--ok);
   font-size: 0.9rem;
+  font-weight: 600;
 }
 
-/* ===================== Ошибки ===================== */
+/* =====================================================================
+   6. Карточки, плашки, пустые состояния
+   ===================================================================== */
 
-.alert {
-  margin-top: 20px;
-  padding: 16px 20px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
+.card {
+  margin-top: var(--gap-l);
+  padding: var(--gap-l);
   background: var(--card);
-}
-
-.alert--error {
-  border-color: var(--bad);
-}
-
-.alert h2 {
-  margin: 0 0 8px;
-  font-size: 1rem;
-  color: var(--bad);
-}
-
-.alert ul {
-  margin: 0;
-  padding-left: 20px;
-  display: grid;
-  gap: 6px;
-  font-size: 0.92rem;
-}
-
-/* ===================== Превью контрольной ===================== */
-
-.card + .card,
-.card + .alert {
-  margin-top: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
 }
 
 .card--success {
   border-color: var(--ok);
 }
 
-.questions {
-  margin: 16px 0 0;
+.card--danger {
+  border-color: var(--bad-soft);
+}
+
+/* Заголовок карточки с кнопками справа. */
+.card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-s);
+}
+
+.hero {
+  padding: var(--gap-xl) 0 var(--gap-s);
+}
+
+.hero__text {
+  max-width: 56ch;
+  margin: 0 0 var(--gap-l);
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+/* Пустое состояние: не ошибка, поэтому серым и с подсказкой что делать. */
+.empty {
+  margin: var(--gap-m) 0 0;
+  padding: var(--gap-l);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+}
+
+.notice {
+  margin: var(--gap-m) 0 0;
+  padding: var(--gap-s) var(--gap-m);
+  background: var(--ok-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.alert {
+  margin-top: var(--gap-l);
+  padding: var(--gap-m) var(--gap-l);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--card);
+}
+
+.alert--error {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.alert h2,
+.alert h3 {
+  margin: 0 0 var(--gap-xs);
+  font-size: 1rem;
+  color: var(--bad);
+}
+
+.alert p {
+  margin: 0;
+}
+
+.alert ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: var(--gap-xs);
+  font-size: 0.92rem;
+}
+
+/* Состояние приёма работ. */
+.switchrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-s);
+  margin-top: var(--gap-s);
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge--open {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.badge--closed {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+/* =====================================================================
+   7. Вкладки и редактор вопросов
+   ===================================================================== */
+
+.tabs {
+  display: flex;
+  gap: var(--gap-xs);
+  margin: var(--gap-m) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab--active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+  font-weight: 600;
+}
+
+.tab__badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 0.8rem;
+}
+
+.steps {
+  margin: 0;
   padding-left: 22px;
   display: grid;
-  gap: 20px;
+  gap: var(--gap-l);
+}
+
+.steps > li {
+  padding-left: var(--gap-xs);
+}
+
+.details {
+  margin-top: var(--gap-s);
+  font-size: 0.9rem;
+}
+
+.details summary {
+  cursor: pointer;
+  color: var(--brand);
+}
+
+.editor__list {
+  margin: var(--gap-m) 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--gap-m);
+}
+
+/* Карточка одного вопроса в редакторе. */
+.qcard {
+  padding: var(--gap-m);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.qcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-s);
+  margin-bottom: var(--gap-s);
+}
+
+.qcard__number {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.qcard__tools {
+  display: flex;
+  gap: var(--gap-xs);
+}
+
+.editor__options {
+  margin: var(--gap-s) 0 var(--gap-m);
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--gap-xs);
+}
+
+/* Строка варианта: радиокнопка, поле, удаление. */
+.optrow {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-s);
+}
+
+.optrow__radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.optrow__radio input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--ok);
+}
+
+.optrow__letter {
+  width: 14px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+/* =====================================================================
+   8. Вопросы и варианты (превью и страница ученика)
+   ===================================================================== */
+
+.questions {
+  margin: var(--gap-m) 0 0;
+  padding: 0;
+  /* Номер выводится в тексте вопроса, браузерная нумерация не нужна. */
+  list-style: none;
+  display: grid;
+  gap: var(--gap-l);
 }
 
 .question__text {
-  margin: 0 0 10px;
+  margin: 0 0 var(--gap-s);
   font-weight: 600;
 }
 
@@ -255,24 +754,25 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 6px;
+  gap: var(--gap-xs);
 }
 
+/* Вариант в превью учителя. */
 .option {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: var(--gap-s);
+  padding: 9px 13px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.94rem;
+  border-radius: var(--radius);
+  font-size: 0.95rem;
 }
 
-/* Правильный вариант: зелёная рамка и фон. Один цвет — плохой указатель,
-   поэтому рядом ещё и подпись «✓ верный» из разметки. */
+/* Правильный вариант: зелёная рамка и фон. Цвет — не единственный признак,
+   рядом обязательна подпись «✓ верный» из разметки. */
 .option--correct {
   border-color: var(--ok);
-  background: rgba(23, 145, 63, 0.1);
+  background: var(--ok-soft);
 }
 
 .option__letter {
@@ -293,78 +793,68 @@ code {
   white-space: nowrap;
 }
 
-/* ===================== Экран ученика ===================== */
-
-/* Ученики открывают ссылку с телефона, поэтому колонка уже и отступы меньше. */
-.page--student {
-  max-width: 560px;
-  padding-top: 28px;
-}
-
-.input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 11px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-  /* 16px — ниже этого размера мобильный Safari сам увеличивает страницу при фокусе. */
-  font-size: 16px;
-  font-family: inherit;
-}
-
-.input:focus {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
-}
-
-.label--spaced {
-  margin-top: 16px;
-}
-
-.field-error {
-  margin: 10px 0 0;
-  color: var(--bad);
-  font-size: 0.9rem;
-}
-
-/* Вариант ответа — большая область нажатия, удобная на телефоне. */
+/* Вариант у ученика — большая зона нажатия для телефона. */
 .choice {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 46px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  cursor: pointer;
+  gap: var(--gap-s);
+  min-height: 50px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--card);
   font-size: 1rem;
+  cursor: pointer;
   /* Убирает серую вспышку при нажатии на мобильных. */
   -webkit-tap-highlight-color: transparent;
 }
 
 .choice:hover {
-  border-color: var(--muted);
+  border-color: var(--brand);
 }
 
 .choice--picked {
-  border-color: #2563eb;
-  background: rgba(37, 99, 235, 0.1);
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  font-weight: 600;
 }
 
 .choice input[type='radio'] {
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   margin: 0;
-  accent-color: #2563eb;
+  accent-color: var(--brand);
+}
+
+/* Прогресс прохождения у ученика. */
+.progress {
+  margin-bottom: var(--gap-l);
+}
+
+.progress__bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress__fill {
+  height: 100%;
+  background: var(--brand);
+  transition: width 0.2s;
+}
+
+.progress__text {
+  margin: var(--gap-xs) 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 /* Крупный итог «Верно 2 из 3». */
 .score {
   margin: 0;
-  font-size: 1.35rem;
+  font-size: 1.5rem;
   font-weight: 700;
 }
 
@@ -380,72 +870,13 @@ code {
   color: var(--bad);
 }
 
-.btn--wide {
-  min-height: 46px;
-  font-size: 1rem;
-}
-
-/* ===================== Узкие экраны ===================== */
-
-@media (max-width: 560px) {
-  .page {
-    padding: 24px 14px 40px;
-  }
-
-  h1 {
-    font-size: 1.45rem;
-  }
-
-  .card {
-    padding: 16px;
-    border-radius: 10px;
-  }
-
-  .questions {
-    padding-left: 0;
-    /* На телефоне нумерация из <ol> занимает место — номер выводим в тексте вопроса. */
-    list-style: none;
-  }
-
-  /* Кнопки во всю ширину — по ним проще попасть пальцем. */
-  .btn--wide {
-    width: 100%;
-  }
-
-  .linkbox {
-    flex: 1 1 100%;
-  }
-}
-
-/* ===================== Ссылки на экране создания ===================== */
-
-.linkblock {
-  margin-top: 18px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-/* Секретная ссылка выделена, чтобы её не спутать с ученической. */
-.linkblock--secret {
-  border-color: #b45309;
-  background: rgba(180, 83, 9, 0.08);
-}
-
-.row--tight {
-  margin-top: 8px;
-}
-
-/* ===================== Страница результатов ===================== */
-
-/* Таблице нужно больше места, чем остальным страницам. */
-.page--wide {
-  max-width: 900px;
-}
+/* =====================================================================
+   9. Таблица результатов и сводка
+   ===================================================================== */
 
 /* На узком экране таблица прокручивается по горизонтали, а не ломает вёрстку. */
 .table-scroll {
-  margin-top: 14px;
+  margin-top: var(--gap-m);
   overflow-x: auto;
 }
 
@@ -464,9 +895,9 @@ code {
 }
 
 .table th {
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   color: var(--muted);
 }
 
@@ -475,36 +906,35 @@ code {
 }
 
 .table__row:hover {
-  background: rgba(127, 127, 127, 0.08);
+  background: var(--brand-soft);
 }
 
 .table__row--open {
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--brand-soft);
 }
 
 .caret {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 
 .table__detail td {
   white-space: normal;
-  background: rgba(127, 127, 127, 0.05);
+  background: var(--bg);
 }
 
-/* Разбор одной работы */
+/* Разбор одной работы. */
 .answers {
-  margin: 4px 0;
-  /* Как и в сводке: номер вопроса выводится в тексте, поэтому браузерную
-     нумерацию <ol> убираем — иначе выходило «1. 1. Вопрос». */
+  margin: var(--gap-xs) 0;
+  /* Номер вопроса выводится в тексте — браузерная нумерация не нужна. */
   list-style: none;
-  padding-left: 0;
+  padding: 0;
   display: grid;
-  gap: 14px;
+  gap: var(--gap-m);
 }
 
 .answer__question {
-  margin: 0 0 4px;
+  margin: 0 0 var(--gap-xs);
   font-weight: 600;
 }
 
@@ -517,27 +947,24 @@ code {
   color: var(--ok);
 }
 
-/* Сводка по вопросам */
+/* Сводка по вопросам. */
 .stats {
-  margin: 14px 0 0;
-  /* Свой маркер списка не нужен: номер вопроса выводится в тексте.
-     Браузерную нумерацию убираем, иначе выходило «1. 1. Вопрос».
-     Именно свой номер и правильный: сводка отсортирована по сложности,
-     поэтому порядок в списке не совпадает с номерами вопросов. */
+  margin: var(--gap-m) 0 0;
+  /* Список отсортирован по сложности, поэтому свой номер вопроса важнее нумерации <ol>. */
   list-style: none;
-  padding-left: 0;
+  padding: 0;
   display: grid;
-  gap: 16px;
+  gap: var(--gap-m);
 }
 
 .stat__text {
-  margin: 0 0 6px;
+  margin: 0 0 var(--gap-xs);
 }
 
 .bar {
   height: 8px;
-  border-radius: 4px;
-  background: rgba(127, 127, 127, 0.2);
+  border-radius: 999px;
+  background: var(--border);
   overflow: hidden;
 }
 
@@ -547,15 +974,126 @@ code {
 }
 
 .stat__numbers {
-  margin: 6px 0 0;
-  font-size: 0.88rem;
+  margin: var(--gap-xs) 0 0;
   color: var(--muted);
+  font-size: 0.86rem;
 }
 
-@media (max-width: 560px) {
+/* =====================================================================
+   10. Главная страница: список контрольных
+   ===================================================================== */
+
+.testlist {
+  margin: var(--gap-m) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--gap-s);
+}
+
+.testcard {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-s);
+  padding: var(--gap-m);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.testcard__main {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.testcard__title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.testcard__meta {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.testcard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-xs);
+}
+
+/* =====================================================================
+   11. Узкие экраны (проверено на 375px)
+   ===================================================================== */
+
+@media (max-width: 620px) {
+  .page {
+    padding: var(--gap-l) 14px 48px;
+  }
+
+  .topbar__inner {
+    padding: 12px 14px;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+  }
+
+  .hero {
+    padding-top: var(--gap-l);
+  }
+
+  .hero__text {
+    font-size: 1rem;
+  }
+
+  .card {
+    padding: var(--gap-m);
+  }
+
+  /* Главные кнопки во всю ширину: по ним проще попасть пальцем. */
+  .btn--wide,
+  .btn--large {
+    width: 100%;
+  }
+
+  .linkbox {
+    flex: 1 1 100%;
+  }
+
   .table th,
   .table td {
     padding: 8px 9px;
     font-size: 0.88rem;
+  }
+
+  .steps {
+    padding-left: 18px;
+  }
+
+  /* На узком экране поля промта ставим в столбик. */
+  .fields--inline {
+    grid-template-columns: 1fr;
+  }
+
+  .field--narrow {
+    width: 100%;
+  }
+
+  /* В редакторе вариант переносится: поле занимает всю ширину под радиокнопкой. */
+  .optrow {
+    flex-wrap: wrap;
+  }
+
+  .optrow .input {
+    flex: 1 1 100%;
+    order: 3;
+  }
+
+  .testcard__actions {
+    width: 100%;
   }
 }

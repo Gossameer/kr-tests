@@ -2,19 +2,21 @@
  * Страница ученика: /t/:code
  *
  * Три экрана, которые сменяют друг друга:
- *   1. «start»   — название контрольной, поля «Фамилия Имя» и «Класс», кнопка «Начать»;
- *   2. «solving» — все вопросы списком с радиокнопками и кнопкой «Сдать работу»;
+ *   1. «start»   — название контрольной, ФИО и выбор класса из списка, «Начать»;
+ *   2. «solving» — все вопросы списком, прогресс «отвечено X из Y», «Сдать работу»;
  *   3. «done»    — результат «Верно X из Y» и список вопросов с ✓/✗.
  *
- * Проверка ответов идёт ТОЛЬКО на сервере: сюда не приходит информация
- * о том, какой вариант правильный, поэтому подсмотреть ответы в браузере нельзя.
+ * Проверка ответов идёт ТОЛЬКО на сервере: сюда не приходит информация о том,
+ * какой вариант правильный. Порядок вопросов и вариантов может быть перемешан —
+ * на сервер уходят id, а не номера на экране, поэтому порядок ни на что не влияет.
  */
 
-import { useEffect, useState } from 'react'
-import { fetchPublicTest, submitAttempt } from '../api'
-import { loadAttempt, saveAttempt } from '../lib/attemptStorage'
-import type { PublicTest, StoredAttempt } from '../types'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
+import { NETWORK_ERROR, SERVER_ERROR, fetchPublicTest, submitAttempt } from '../api'
+import { loadAttempt, saveAttempt } from '../lib/attemptStorage'
+import { getOrCreateSeed, shuffleWithSeed } from '../lib/shuffle'
+import type { PublicQuestion, PublicTest, StoredAttempt } from '../types'
 
 /** Экран, который показываем прямо сейчас. */
 type Phase = 'start' | 'solving' | 'done'
@@ -61,13 +63,35 @@ export default function StudentTestPage() {
       )
   }, [code])
 
+  /**
+   * Порядок вопросов и вариантов для ЭТОГО ученика.
+   *
+   * useMemo пересчитывает список только при смене теста, а не на каждую
+   * перерисовку: иначе порядок менялся бы после каждого выбора варианта.
+   */
+  const questions: PublicQuestion[] = useMemo(() => {
+    if (loading.kind !== 'ready') {
+      return []
+    }
+    if (!loading.test.shuffle) {
+      return loading.test.questions
+    }
+
+    const seed = getOrCreateSeed(code)
+    // Вариантам даём соседние seed'ы, чтобы их порядок тоже был свой у каждого.
+    return shuffleWithSeed(loading.test.questions, seed).map((question, index) => ({
+      ...question,
+      options: shuffleWithSeed(question.options, seed + index + 1),
+    }))
+  }, [loading, code])
+
   function handleStart() {
     if (!studentName.trim()) {
       setFormError('Введите фамилию и имя.')
       return
     }
     if (!studentClass.trim()) {
-      setFormError('Введите класс.')
+      setFormError('Выберите класс.')
       return
     }
 
@@ -85,7 +109,7 @@ export default function StudentTestPage() {
       return
     }
 
-    const total = loading.test.questions.length
+    const total = questions.length
     const answered = Object.keys(chosen).length
 
     // Подтверждение: видно, сколько вопросов осталось без ответа.
@@ -111,7 +135,7 @@ export default function StudentTestPage() {
         result,
         // Тексты вопросов кладём рядом с результатом, чтобы экран результата
         // работал и без повторного запроса к серверу.
-        questions: loading.test.questions.map((question) => ({
+        questions: questions.map((question) => ({
           id: question.id,
           text: question.text,
           position: question.position,
@@ -133,8 +157,7 @@ export default function StudentTestPage() {
   // ------------------------------------------------------------------
   if (phase === 'done' && stored !== null) {
     const { result } = stored
-    // Тексты вопросов ищем по id: порядок в результате и в списке вопросов совпадает,
-    // но по id надёжнее.
+    // Тексты вопросов ищем по id — порядок на сервере и на экране может различаться.
     const textById = new Map(stored.questions.map((question) => [question.id, question.text]))
 
     return (
@@ -165,7 +188,8 @@ export default function StudentTestPage() {
         </ol>
 
         <p className="muted">
-          Работа сдана и сохранена. Повторно пройти эту контрольную с этого устройства нельзя.
+          Работа сдана и сохранена. Повторно пройти эту контрольную нельзя — если нужна
+          пересдача, обратитесь к учителю.
         </p>
       </main>
     )
@@ -177,25 +201,74 @@ export default function StudentTestPage() {
   if (loading.kind === 'loading') {
     return (
       <main className="page page--student">
-        <p>Загружаем контрольную…</p>
+        <p className="loading">Загружаем контрольную…</p>
       </main>
     )
   }
 
   if (loading.kind === 'error') {
+    // При сетевой ошибке и поломке сервера ссылка ни при чём — совет её проверить
+    // только запутает. Показываем его лишь тогда, когда дело может быть в ссылке.
+    const isTechnical =
+      loading.message === NETWORK_ERROR || loading.message === SERVER_ERROR
+
     return (
       <main className="page page--student">
         <h1>Контрольная не открылась</h1>
         <section className="alert alert--error">
           <p>{loading.message}</p>
         </section>
-        <p className="muted">Проверьте ссылку — её должен дать учитель.</p>
+        {!isTechnical && (
+          <p className="muted">Проверьте ссылку — её должен дать учитель.</p>
+        )}
       </main>
     )
   }
 
   const test = loading.test
-  const total = test.questions.length
+
+  // ------------------------------------------------------------------
+  // Приём работ закрыт
+  // ------------------------------------------------------------------
+  if (!test.is_open) {
+    return (
+      <main className="page page--student">
+        <h1>{test.title}</h1>
+        <section className="card">
+          <h2>Приём работ закрыт</h2>
+          <p>Учитель больше не принимает ответы по этой контрольной.</p>
+          <p className="muted">
+            Если вы должны были её сдать, подойдите к учителю: {test.teacher_name}.
+          </p>
+        </section>
+      </main>
+    )
+  }
+
+  // ------------------------------------------------------------------
+  // У контрольной не указаны классы
+  //
+  // Так выглядят контрольные, созданные до обновления сервиса: выбрать класс
+  // не из чего, а без класса работа не сдаётся. Показываем понятное объяснение
+  // вместо тупика «Выберите класс» при пустом списке.
+  // ------------------------------------------------------------------
+  if (test.classes.length === 0) {
+    return (
+      <main className="page page--student">
+        <h1>{test.title}</h1>
+        <section className="card">
+          <h2>Эту контрольную пока нельзя пройти</h2>
+          <p>В ней не указаны классы, поэтому отметить свой класс не получится.</p>
+          <p className="muted">
+            Сообщите учителю ({test.teacher_name}) — контрольную нужно создать заново,
+            указав классы.
+          </p>
+        </section>
+      </main>
+    )
+  }
+
+  const total = questions.length
   const answered = Object.keys(chosen).length
 
   // ------------------------------------------------------------------
@@ -225,13 +298,20 @@ export default function StudentTestPage() {
           <label className="label label--spaced" htmlFor="student-class">
             Класс
           </label>
-          <input
+          {/* Список задаёт учитель — ученик не может написать класс с ошибкой. */}
+          <select
             id="student-class"
-            className="input"
+            className="input select"
             value={studentClass}
             onChange={(event) => setStudentClass(event.target.value)}
-            placeholder="6А"
-          />
+          >
+            <option value="">— выберите класс —</option>
+            {test.classes.map((className) => (
+              <option key={className} value={className}>
+                {className}
+              </option>
+            ))}
+          </select>
 
           {formError !== '' && <p className="field-error">{formError}</p>}
 
@@ -252,11 +332,24 @@ export default function StudentTestPage() {
     <main className="page page--student">
       <h1>{test.title}</h1>
       <p className="lead">
-        {studentName}, {studentClass}. Отвечено: {answered} из {total}.
+        {studentName}, {studentClass}
       </p>
 
+      {/* Прогресс виден всё время: сколько вопросов уже отвечено. */}
+      <div className="progress" role="status">
+        <div className="progress__bar" aria-hidden="true">
+          <div
+            className="progress__fill"
+            style={{ width: total === 0 ? '0%' : `${(answered * 100) / total}%` }}
+          />
+        </div>
+        <p className="progress__text">
+          Отвечено {answered} из {total}
+        </p>
+      </div>
+
       <ol className="questions">
-        {test.questions.map((question, questionIndex) => (
+        {questions.map((question, questionIndex) => (
           <li key={question.id} className="question">
             <p className="question__text">
               {questionIndex + 1}. {question.text}
@@ -293,7 +386,7 @@ export default function StudentTestPage() {
         </section>
       )}
 
-      <div className="row">
+      <div className="row row--actions">
         <button
           type="button"
           className="btn btn--primary btn--wide"

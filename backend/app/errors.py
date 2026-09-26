@@ -26,6 +26,8 @@ FIELD_NAMES = {
     "student_name": "фамилия и имя (student_name)",
     "student_class": "класс (student_class)",
     "answers": "ответы (answers)",
+    "classes": "классы (classes)",
+    "shuffle": "перемешивание (shuffle)",
 }
 
 # Человеческие формулировки для стандартных типов ошибок Pydantic.

@@ -8,11 +8,11 @@
 import logging
 import secrets
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, HTTPException, status
 from psycopg import errors as pg_errors
 
 from app import db
-from app.schemas import TestCreate, TestCreated, TestOut
+from app.schemas import TestCreate, TestCreated
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +89,20 @@ def create_test(payload: TestCreate) -> TestCreated:
                 test_row = conn.execute(
                     """
                     INSERT INTO tests (
-                        title, teacher_name, share_token, results_token, is_published
+                        title, teacher_name, share_token, results_token,
+                        classes, shuffle, is_published
                     )
-                    VALUES (%s, %s, %s, %s, TRUE)
+                    VALUES (%s, %s, %s, %s, %s, %s, TRUE)
                     RETURNING id
                     """,
-                    (payload.title, payload.teacher_name, code, results_token),
+                    (
+                        payload.title,
+                        payload.teacher_name,
+                        code,
+                        results_token,
+                        payload.classes,   # список Python -> массив TEXT[] в базе
+                        payload.shuffle,
+                    ),
                 ).fetchone()
                 test_id = test_row["id"]
 
@@ -156,91 +164,14 @@ def create_test(payload: TestCreate) -> TestCreated:
     )
 
 
-@router.get(
-    "/{code}",
-    response_model=TestOut,
-    summary="Получить контрольную по коду (превью для учителя)",
-)
-def get_test(
-    code: str = Path(
-        min_length=4,
-        max_length=32,
-        description="Короткий код из ссылки, например k7mfp2xq",
-    ),
-) -> TestOut:
-    """
-    Отдаёт контрольную целиком, ВКЛЮЧАЯ признак правильного ответа.
-
-    Это превью для учителя. Для страницы ученика понадобится отдельный
-    эндпоинт без is_correct — иначе правильные ответы окажутся в браузере ученика.
-    """
-    try:
-        pool = db.get_pool()
-    except Exception as exc:  # noqa: BLE001
-        raise db_unavailable() from exc
-
-    with pool.connection() as conn:
-        # 1. Сама контрольная по коду.
-        test_row = conn.execute(
-            """
-            SELECT id, title, teacher_name, share_token, is_published, created_at
-            FROM tests
-            WHERE share_token = %s
-            """,
-            (code,),
-        ).fetchone()
-
-        if test_row is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Контрольная с кодом «{code}» не найдена.",
-            )
-
-        # 2. Все вопросы этой контрольной по порядку.
-        question_rows = conn.execute(
-            """
-            SELECT id, text, position
-            FROM questions
-            WHERE test_id = %s
-            ORDER BY position, id
-            """,
-            (test_row["id"],),
-        ).fetchall()
-
-        # 3. Все варианты сразу для всех вопросов — одним запросом,
-        #    чтобы не дёргать базу отдельно на каждый вопрос.
-        question_ids = [row["id"] for row in question_rows]
-        option_rows: list[dict] = []
-        if question_ids:
-            option_rows = conn.execute(
-                """
-                SELECT id, question_id, text, is_correct, position
-                FROM options
-                WHERE question_id = ANY(%s)
-                ORDER BY position, id
-                """,
-                (question_ids,),
-            ).fetchall()
-
-    # Раскладываем варианты по вопросам: {id вопроса: [варианты]}
-    options_by_question: dict[int, list[dict]] = {}
-    for option in option_rows:
-        options_by_question.setdefault(option["question_id"], []).append(option)
-
-    return TestOut(
-        id=test_row["id"],
-        code=test_row["share_token"],
-        title=test_row["title"],
-        teacher_name=test_row["teacher_name"],
-        is_published=test_row["is_published"],
-        created_at=test_row["created_at"],
-        questions=[
-            {
-                "id": question["id"],
-                "text": question["text"],
-                "position": question["position"],
-                "options": options_by_question.get(question["id"], []),
-            }
-            for question in question_rows
-        ],
-    )
+# ---------------------------------------------------------------------
+# Здесь раньше был GET /api/tests/{code} — «превью для учителя» с полем
+# is_correct. Его убрали: ключом служил share_token, то есть тот самый код,
+# который есть у КАЖДОГО ученика. Зная свою ссылку, ученик мог запросить этот
+# адрес и увидеть все правильные ответы.
+#
+# Теперь правильные ответы отдаются только по results_token:
+#   GET /api/results/{results_token}                       — таблица и сводка
+#   GET /api/results/{results_token}/attempts/{attempt_id} — разбор работы
+# (см. app/routers/results.py). По ученическому коду их не получить.
+# ---------------------------------------------------------------------

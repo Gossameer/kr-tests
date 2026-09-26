@@ -14,12 +14,17 @@ import io
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Path, Response, status
+from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 
 from app import db
-from app.schemas import AttemptDetail, ResultsOverview
+from app.schemas import (
+    AttemptDetail,
+    ResultsOverview,
+    ResultsOverviewSettings,
+    TestSettingsUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ def load_test_by_results_token(conn, results_token: str) -> dict:
     """Находит контрольную по СЕКРЕТНОМУ токену результатов или бросает 404."""
     row = conn.execute(
         """
-        SELECT id, title, teacher_name, share_token
+        SELECT id, title, teacher_name, share_token, classes, shuffle, is_open
         FROM tests
         WHERE results_token = %s
         """,
@@ -147,6 +152,9 @@ def get_results(
         title=test_row["title"],
         teacher_name=test_row["teacher_name"],
         code=test_row["share_token"],
+        classes=test_row["classes"],
+        shuffle=test_row["shuffle"],
+        is_open=test_row["is_open"],
         questions_count=questions_count,
         attempts_count=len(attempt_rows),
         attempts=[
@@ -426,3 +434,129 @@ def export_results(
         ),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# =====================================================================
+# Управление контрольной (всё — по той же секретной ссылке)
+# =====================================================================
+
+
+@router.patch(
+    "/{results_token}",
+    response_model=ResultsOverviewSettings,
+    summary="Открыть или закрыть приём работ",
+)
+def update_settings(
+    payload: TestSettingsUpdate,
+    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+) -> ResultsOverviewSettings:
+    """
+    Переключает приём работ.
+
+    Закрытый приём не удаляет ничего: ученики просто видят сообщение
+    «приём работ закрыт», а уже сданные работы остаются на месте.
+    """
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_by_results_token(conn, results_token)
+
+        conn.execute(
+            "UPDATE tests SET is_open = %s WHERE id = %s",
+            (payload.is_open, test_row["id"]),
+        )
+
+    logger.info(
+        "Приём работ по тесту %s: %s",
+        test_row["share_token"],
+        "открыт" if payload.is_open else "закрыт",
+    )
+    return ResultsOverviewSettings(is_open=payload.is_open)
+
+
+@router.delete(
+    "/{results_token}/attempts/{attempt_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Удалить работу ученика (разрешить пересдачу)",
+)
+def delete_attempt(
+    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    attempt_id: int = Path(ge=1),
+) -> Response:
+    """
+    Удаляет одну работу.
+
+    Это и есть способ разрешить пересдачу: уникальный индекс из миграции 004
+    больше не сработает, и ученик сможет сдать заново. Ответы удалятся сами —
+    у answers.attempt_id стоит ON DELETE CASCADE.
+    """
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_by_results_token(conn, results_token)
+
+        # test_id в условии обязателен: иначе по одному токену можно было бы
+        # удалять работы из чужих контрольных, подставляя произвольный id.
+        deleted = conn.execute(
+            "DELETE FROM attempts WHERE id = %s AND test_id = %s RETURNING id",
+            (attempt_id, test_row["id"]),
+        ).fetchone()
+
+        if deleted is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Такая работа в этой контрольной не найдена.",
+            )
+
+    logger.info("Удалена работа %s из теста %s", attempt_id, test_row["share_token"])
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/{results_token}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Удалить контрольную вместе со всеми работами",
+)
+def delete_test(
+    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    confirm_title: str = Query(
+        description="Точное название контрольной — подтверждение удаления",
+    ),
+) -> Response:
+    """
+    Удаляет контрольную со всеми вопросами и работами. Действие необратимо.
+
+    Защита от случайного нажатия двойная: подтверждение в браузере И название,
+    которое сервер сверяет сам. Без совпадения названия удаления не будет,
+    даже если запрос отправлен мимо страницы.
+
+    Вопросы, варианты, работы и ответы удаляются каскадом (см. миграции 001 и 004).
+    """
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_by_results_token(conn, results_token)
+
+        # Сравниваем без учёта пробелов по краям: учитель мог скопировать название.
+        if confirm_title.strip() != test_row["title"].strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Название не совпадает — контрольная не удалена. "
+                    "Введите название точно так, как оно указано в заголовке."
+                ),
+            )
+
+        conn.execute("DELETE FROM tests WHERE id = %s", (test_row["id"],))
+
+    logger.info("Удалена контрольная %s («%s»)", test_row["share_token"], test_row["title"])
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

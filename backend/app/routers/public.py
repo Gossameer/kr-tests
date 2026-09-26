@@ -13,6 +13,7 @@
 import logging
 
 from fastapi import APIRouter, HTTPException, Path, status
+from psycopg import errors as pg_errors
 
 from app import db
 from app.schemas import AttemptCreate, AttemptResult, PublicTestOut
@@ -47,10 +48,15 @@ def test_not_found(code: str) -> HTTPException:
 
 
 def load_published_test(conn, code: str) -> dict:
-    """Находит опубликованную контрольную по коду или бросает 404."""
+    """
+    Находит опубликованную контрольную по коду или бросает 404.
+
+    Закрытый приём работ (is_open = FALSE) здесь НЕ отсекается: ученику нужно
+    показать сообщение «приём работ закрыт», а не «страница не найдена».
+    """
     row = conn.execute(
         """
-        SELECT id, title, teacher_name
+        SELECT id, title, teacher_name, classes, shuffle, is_open
         FROM tests
         WHERE share_token = %s AND is_published = TRUE
         """,
@@ -85,15 +91,19 @@ def get_public_test(
     with pool.connection() as conn:
         test_row = load_published_test(conn, code)
 
-        question_rows = conn.execute(
-            """
-            SELECT id, text, position
-            FROM questions
-            WHERE test_id = %s
-            ORDER BY position, id
-            """,
-            (test_row["id"],),
-        ).fetchall()
+        # Если приём закрыт, вопросы не читаем и не отдаём: ученику покажут
+        # сообщение, а тексты заданий незачем отправлять в браузер.
+        question_rows: list[dict] = []
+        if test_row["is_open"]:
+            question_rows = conn.execute(
+                """
+                SELECT id, text, position
+                FROM questions
+                WHERE test_id = %s
+                ORDER BY position, id
+                """,
+                (test_row["id"],),
+            ).fetchall()
 
         question_ids = [row["id"] for row in question_rows]
         option_rows: list[dict] = []
@@ -117,6 +127,9 @@ def get_public_test(
         code=code,
         title=test_row["title"],
         teacher_name=test_row["teacher_name"],
+        classes=test_row["classes"],
+        shuffle=test_row["shuffle"],
+        is_open=test_row["is_open"],
         questions=[
             {
                 "id": question["id"],
@@ -159,6 +172,26 @@ def submit_attempt(
     with pool.connection() as conn:
         test_row = load_published_test(conn, code)
         test_id = test_row["id"]
+
+        # Приём работ мог быть закрыт, пока ученик решал. 409 = «состояние
+        # на сервере изменилось», а не «ошибка в запросе».
+        if not test_row["is_open"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Приём работ закрыт — учитель больше не принимает ответы.",
+            )
+
+        # Класс должен быть одним из тех, что задал учитель. Список приходит
+        # на страницу выпадающим списком, но запрос можно отправить и мимо неё.
+        allowed_classes: list[str] = test_row["classes"]
+        if allowed_classes and payload.student_class not in allowed_classes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Класс «{payload.student_class}» не входит в список этой "
+                    f"контрольной: {', '.join(allowed_classes)}."
+                ),
+            )
 
         question_rows = conn.execute(
             """
@@ -272,6 +305,23 @@ def submit_attempt(
                             for question_id, option_id in answer_rows
                         ],
                     )
+        except pg_errors.UniqueViolation as exc:
+            # Сработал уникальный индекс uq_attempts_test_student из миграции 004:
+            # такая работа уже сдана. Имя нормализовано, поэтому смена регистра
+            # или лишние пробелы обойти защиту не помогут.
+            logger.info(
+                "Повторная сдача: тест=%s, ученик=%s (%s)",
+                code,
+                payload.student_name,
+                payload.student_class,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Вы уже сдали эту работу. Если нужно пройти её заново, "
+                    "попросите учителя удалить вашу попытку."
+                ),
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             logger.exception("Не удалось сохранить работу ученика")
             raise HTTPException(

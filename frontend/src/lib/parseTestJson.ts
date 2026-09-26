@@ -1,20 +1,24 @@
 /**
- * Разбор и проверка JSON, который учитель вставляет в поле.
+ * Разбор и проверка вопросов контрольной.
  *
- * Эти же правила проверяет бэкенд — здесь они нужны, чтобы учитель увидел
- * ошибку сразу, не дожидаясь запроса на сервер. Бэкенд остаётся последней
- * инстанцией: фронтенду доверять нельзя, его легко обойти.
+ * Здесь три задачи:
+ *   1. вытащить JSON из ответа ИИ, даже если вокруг него текст или ```json;
+ *   2. превратить его в наши объекты;
+ *   3. проверить правила (те же, что на бэкенде) и выдать понятные ошибки.
+ *
+ * Бэкенд проверяет всё заново: фронтенду доверять нельзя, его легко обойти.
+ * Проверка здесь нужна только чтобы учитель увидел ошибку сразу.
  */
 
-import type { DraftQuestion, TestDraft } from '../types'
+import type { DraftQuestion } from '../types'
 
-/** Результат разбора: либо готовая контрольная, либо список ошибок. */
+export const MAX_QUESTIONS = 100
+export const MAX_OPTIONS = 10
+
+/** Результат разбора вставленного текста. */
 export type ParseResult =
-  | { ok: true; draft: TestDraft }
+  | { ok: true; title: string | null; questions: DraftQuestion[] }
   | { ok: false; errors: string[] }
-
-const MAX_QUESTIONS = 100
-const MAX_OPTIONS = 10
 
 /** Проверяет, что значение — непустая строка, и возвращает её без пробелов по краям. */
 function cleanString(value: unknown): string | null {
@@ -25,21 +29,106 @@ function cleanString(value: unknown): string | null {
   return cleaned.length > 0 ? cleaned : null
 }
 
-export function parseTestJson(raw: string): ParseResult {
-  if (!raw.trim()) {
-    return { ok: false, errors: ['Поле пустое — вставьте JSON с вопросами.'] }
+/**
+ * Достаёт JSON из ответа ИИ.
+ *
+ * ИИ часто отвечает так:
+ *     Вот ваша контрольная:
+ *     ```json
+ *     { "title": ... }
+ *     ```
+ *     Готово!
+ *
+ * Поэтому сначала пробуем содержимое ```-блока, а если его нет — берём всё
+ * от первой «{» до последней «}». Если и этого нет, возвращаем исходный текст:
+ * пусть JSON.parse сам сообщит об ошибке.
+ */
+export function extractJsonBlock(raw: string): string {
+  const text = raw.trim()
+
+  // Блок в тройных кавычках, с «json» или без.
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)
+  if (fenced?.[1] !== undefined && fenced[1].trim() !== '') {
+    return fenced[1].trim()
   }
 
-  // Шаг 1: превратить текст в объект. Тут ловим пропущенные запятые и кавычки.
+  // Иначе — самый внешний объект { ... }.
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start !== -1 && end > start) {
+    return text.slice(start, end + 1)
+  }
+
+  return text
+}
+
+/**
+ * Проверяет список вопросов по правилам контрольной.
+ * Возвращает все найденные ошибки — учителю удобнее исправить их сразу.
+ */
+export function validateQuestions(questions: DraftQuestion[]): string[] {
+  const errors: string[] = []
+
+  if (questions.length === 0) {
+    errors.push('Добавьте хотя бы один вопрос.')
+    return errors
+  }
+  if (questions.length > MAX_QUESTIONS) {
+    errors.push(`Слишком много вопросов (${questions.length}), максимум ${MAX_QUESTIONS}.`)
+  }
+
+  questions.forEach((question, index) => {
+    // Нумерация для человека — с единицы.
+    const where = `Вопрос ${index + 1}`
+
+    if (question.text.trim() === '') {
+      errors.push(`${where}: не заполнен текст вопроса.`)
+    }
+
+    const options = question.options.map((option) => option.trim())
+
+    if (options.length < 2) {
+      errors.push(`${where}: нужно минимум 2 варианта ответа, а есть ${options.length}.`)
+    }
+    if (options.length > MAX_OPTIONS) {
+      errors.push(`${where}: слишком много вариантов (${options.length}), максимум ${MAX_OPTIONS}.`)
+    }
+    if (options.some((option) => option === '')) {
+      errors.push(`${where}: есть пустые варианты ответа.`)
+    }
+    if (new Set(options).size !== options.length) {
+      errors.push(`${where}: варианты ответа повторяются.`)
+    }
+    if (!Number.isInteger(question.correct) || question.correct < 0) {
+      errors.push(`${where}: не отмечен правильный вариант.`)
+    } else if (question.correct >= options.length) {
+      // Бывает и при загрузке из ИИ (correct больше числа вариантов),
+      // и при наборе руками (правильный вариант удалили) — текст годится для обоих.
+      errors.push(
+        `${where}: правильным отмечен вариант №${question.correct + 1}, ` +
+          `а вариантов всего ${options.length}.`,
+      )
+    }
+  })
+
+  return errors
+}
+
+/** Разбирает текст (обычно — ответ ИИ) в список вопросов. */
+export function parseTestJson(raw: string): ParseResult {
+  if (!raw.trim()) {
+    return { ok: false, errors: ['Поле пустое — вставьте ответ ИИ.'] }
+  }
+
   let data: unknown
   try {
-    data = JSON.parse(raw)
+    data = JSON.parse(extractJsonBlock(raw))
   } catch (error: unknown) {
     const details = error instanceof Error ? error.message : String(error)
     return {
       ok: false,
       errors: [
-        'Это не похоже на корректный JSON — проверьте запятые, кавычки и скобки.',
+        'Не удалось прочитать JSON — проверьте запятые, кавычки и скобки.',
         `Подробности от браузера: ${details}`,
       ],
     }
@@ -53,32 +142,21 @@ export function parseTestJson(raw: string): ParseResult {
   }
 
   const source = data as Record<string, unknown>
-  // Собираем ВСЕ ошибки, а не только первую: учителю удобнее исправить всё сразу.
   const errors: string[] = []
 
-  // Шаг 2: название.
+  // Название необязательно: учитель мог уже заполнить его в форме.
   const title = cleanString(source.title)
-  if (title === null) {
-    errors.push('Поле «title» отсутствует или пустое — укажите название контрольной.')
-  }
 
-  // Шаг 3: список вопросов.
   const rawQuestions = source.questions
   if (!Array.isArray(rawQuestions)) {
-    errors.push('Поле «questions» отсутствует или не является списком вопросов.')
+    errors.push('В JSON нет списка «questions».')
     return { ok: false, errors }
   }
-  if (rawQuestions.length === 0) {
-    errors.push('Список «questions» пустой — нужен хотя бы один вопрос.')
-  }
-  if (rawQuestions.length > MAX_QUESTIONS) {
-    errors.push(`Слишком много вопросов (${rawQuestions.length}), максимум ${MAX_QUESTIONS}.`)
-  }
 
+  // Сначала приводим к нашим типам, потом проверяем общими правилами.
   const questions: DraftQuestion[] = []
 
   rawQuestions.forEach((rawQuestion: unknown, index: number) => {
-    // Нумерация для человека — с единицы.
     const where = `Вопрос ${index + 1}`
 
     if (rawQuestion === null || typeof rawQuestion !== 'object' || Array.isArray(rawQuestion)) {
@@ -87,57 +165,31 @@ export function parseTestJson(raw: string): ParseResult {
     }
 
     const question = rawQuestion as Record<string, unknown>
-
-    const text = cleanString(question.text)
-    if (text === null) {
-      errors.push(`${where}: поле «text» отсутствует или пустое.`)
-    }
+    const text = typeof question.text === 'string' ? question.text.trim() : ''
 
     if (!Array.isArray(question.options)) {
       errors.push(`${where}: поле «options» отсутствует или не является списком.`)
       return
     }
 
-    const options = question.options.map((option: unknown) => cleanString(option))
-    if (options.some((option) => option === null)) {
-      errors.push(`${where}: среди вариантов ответа есть пустые или не-текстовые.`)
-      return
-    }
+    const options = question.options.map((option: unknown) =>
+      typeof option === 'string' ? option.trim() : '',
+    )
 
-    const cleanOptions = options as string[]
-
-    if (cleanOptions.length < 2) {
-      errors.push(
-        `${where}: нужно минимум 2 варианта ответа, а указано ${cleanOptions.length}.`,
-      )
-    }
-    if (cleanOptions.length > MAX_OPTIONS) {
-      errors.push(
-        `${where}: слишком много вариантов (${cleanOptions.length}), максимум ${MAX_OPTIONS}.`,
-      )
-    }
-    if (new Set(cleanOptions).size !== cleanOptions.length) {
-      errors.push(`${where}: есть одинаковые варианты ответа — похоже на ошибку ИИ.`)
-    }
-
-    // Главная проверка: correct должен указывать на существующий вариант.
     const correct = question.correct
     if (typeof correct !== 'number' || !Number.isInteger(correct)) {
       errors.push(`${where}: поле «correct» должно быть целым числом (номер с нуля).`)
-    } else if (correct < 0 || correct >= cleanOptions.length) {
-      errors.push(
-        `${where}: correct = ${correct}, но вариантов ${cleanOptions.length} — ` +
-          `допустимы значения от 0 до ${cleanOptions.length - 1} (нумерация с нуля).`,
-      )
-    } else if (text !== null) {
-      // Вопрос полностью корректен — кладём в результат.
-      questions.push({ text, options: cleanOptions, correct })
+      return
     }
+
+    questions.push({ text, options, correct })
   })
+
+  errors.push(...validateQuestions(questions))
 
   if (errors.length > 0) {
     return { ok: false, errors }
   }
 
-  return { ok: true, draft: { title: title as string, questions } }
+  return { ok: true, title, questions }
 }

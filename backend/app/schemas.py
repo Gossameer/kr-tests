@@ -10,12 +10,16 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.names import normalize_class_name, normalize_full_name
+
 # Разумные ограничения, чтобы в базу не попало что-то огромное.
 MAX_TITLE_LEN = 300
 MAX_QUESTIONS = 100
 MAX_QUESTION_LEN = 2000
 MAX_OPTIONS = 10
 MAX_OPTION_LEN = 500
+MAX_CLASSES = 30
+MAX_CLASS_LEN = 20
 
 
 # =====================================================================
@@ -37,8 +41,13 @@ class TestCreate(BaseModel):
 
     title: str
     questions: list[QuestionIn]
-    # Поля нет в JSON от ИИ, но колонка в базе NOT NULL — поэтому значение по умолчанию.
-    teacher_name: str = "Учитель"
+    # ФИО учителя обязательно: учитель вводит его в форме создания.
+    teacher_name: str
+    # Классы, для которых эта контрольная. Ученик выбирает свой из этого списка,
+    # поэтому пустым он быть не может.
+    classes: list[str]
+    # Перемешивать ли вопросы и варианты у каждого ученика.
+    shuffle: bool = True
 
     @field_validator("title", "teacher_name")
     @classmethod
@@ -49,6 +58,32 @@ class TestCreate(BaseModel):
             raise ValueError("не может быть пустым")
         if len(cleaned) > MAX_TITLE_LEN:
             raise ValueError(f"слишком длинное, максимум {MAX_TITLE_LEN} символов")
+        return cleaned
+
+    @field_validator("classes")
+    @classmethod
+    def check_classes(cls, value: list[str]) -> list[str]:
+        """
+        Приводит список классов в порядок: убирает пробелы, пустые значения
+        и повторы, сохраняя порядок, в котором учитель их написал.
+        """
+        cleaned: list[str] = []
+        for item in value:
+            name = " ".join(item.split())
+            if not name:
+                continue  # пустые значения просто пропускаем
+            if len(name) > MAX_CLASS_LEN:
+                raise ValueError(
+                    f"название класса «{name[:20]}…» длиннее {MAX_CLASS_LEN} символов"
+                )
+            if name not in cleaned:  # повтор — не ошибка, просто лишнее
+                cleaned.append(name)
+
+        if not cleaned:
+            raise ValueError("укажите хотя бы один класс, например 6А")
+        if len(cleaned) > MAX_CLASSES:
+            raise ValueError(f"слишком много классов, максимум {MAX_CLASSES}")
+
         return cleaned
 
     @model_validator(mode="after")
@@ -131,39 +166,6 @@ class TestCreated(BaseModel):
     questions_count: int
 
 
-class OptionOut(BaseModel):
-    """Вариант ответа в превью для учителя (с признаком правильного)."""
-
-    id: int
-    text: str
-    is_correct: bool
-    position: int
-
-
-class QuestionOut(BaseModel):
-    id: int
-    text: str
-    position: int
-    options: list[OptionOut]
-
-
-class TestOut(BaseModel):
-    """
-    Ответ на GET /api/tests/{code} — превью для учителя.
-
-    ВНИМАНИЕ: здесь есть is_correct. Для страницы ученика понадобится
-    отдельная схема без этого поля, иначе правильные ответы утекут в браузер.
-    """
-
-    id: int
-    code: str
-    title: str
-    teacher_name: str
-    is_published: bool
-    created_at: datetime
-    questions: list[QuestionOut]
-
-
 # =====================================================================
 # Публичная часть: то, что видит и присылает УЧЕНИК
 #
@@ -196,6 +198,12 @@ class PublicTestOut(BaseModel):
     code: str
     title: str
     teacher_name: str
+    # Список классов — ученик выбирает свой из выпадающего списка.
+    classes: list[str]
+    # Перемешивать ли порядок; само перемешивание делает страница ученика.
+    shuffle: bool
+    # Открыт ли приём работ. Если закрыт, questions приходит пустым.
+    is_open: bool
     questions: list[PublicQuestionOut]
 
 
@@ -214,7 +222,9 @@ class AttemptCreate(BaseModel):
     @field_validator("student_name")
     @classmethod
     def check_name(cls, value: str) -> str:
-        cleaned = " ".join(value.split())  # убираем двойные пробелы внутри
+        # Нормализация на сервере: «радов  мадлена» → «Радов Мадлена».
+        # Делать это только на фронте нельзя — запрос легко отправить мимо страницы.
+        cleaned = normalize_full_name(value)
         if not cleaned:
             raise ValueError("укажите фамилию и имя")
         if len(cleaned) > MAX_STUDENT_NAME_LEN:
@@ -224,7 +234,7 @@ class AttemptCreate(BaseModel):
     @field_validator("student_class")
     @classmethod
     def check_class(cls, value: str) -> str:
-        cleaned = " ".join(value.split())
+        cleaned = normalize_class_name(value)
         if not cleaned:
             raise ValueError("укажите класс")
         if len(cleaned) > MAX_STUDENT_CLASS_LEN:
@@ -296,6 +306,10 @@ class ResultsOverview(BaseModel):
     teacher_name: str
     # Ученический код показываем, чтобы учитель мог заодно скопировать ссылку классу.
     code: str
+    classes: list[str]
+    shuffle: bool
+    # Открыт ли приём работ — этим управляет переключатель на странице результатов.
+    is_open: bool
     questions_count: int
     attempts_count: int
     attempts: list[AttemptRow]
@@ -325,3 +339,16 @@ class AttemptDetail(BaseModel):
     percent: int
     finished_at: datetime | None
     items: list[AttemptDetailItem]
+
+
+class TestSettingsUpdate(BaseModel):
+    """Тело PATCH /api/results/{results_token}: что меняем в настройках."""
+
+    # Пока настройка одна — открыт ли приём работ.
+    is_open: bool
+
+
+class ResultsOverviewSettings(BaseModel):
+    """Ответ на PATCH: подтверждаем новое состояние."""
+
+    is_open: bool

@@ -11,6 +11,12 @@ export type DraftQuestion = {
 /** Контрольная, готовая к отправке на бэкенд. */
 export type TestDraft = {
   title: string
+  /** ФИО учителя — обязательное поле формы. */
+  teacher_name: string
+  /** Классы, из которых ученик выберет свой. */
+  classes: string[]
+  /** Перемешивать ли вопросы и варианты у каждого ученика. */
+  shuffle: boolean
   questions: DraftQuestion[]
 }
 
@@ -22,32 +28,6 @@ export type CreatedTest = {
   results_token: string
   title: string
   questions_count: number
-}
-
-/** Вариант ответа в ответе GET /api/tests/{code} */
-export type SavedOption = {
-  id: number
-  text: string
-  is_correct: boolean
-  position: number
-}
-
-export type SavedQuestion = {
-  id: number
-  text: string
-  position: number
-  options: SavedOption[]
-}
-
-/** Ответ бэкенда на GET /api/tests/{code} — превью для учителя. */
-export type SavedTest = {
-  id: number
-  code: string
-  title: string
-  teacher_name: string
-  is_published: boolean
-  created_at: string
-  questions: SavedQuestion[]
 }
 
 /* ===================== Публичная часть: экран ученика ===================== */
@@ -70,6 +50,12 @@ export type PublicTest = {
   code: string
   title: string
   teacher_name: string
+  /** Классы контрольной — ученик выбирает свой из этого списка. */
+  classes: string[]
+  /** Нужно ли перемешать порядок вопросов и вариантов на этом устройстве. */
+  shuffle: boolean
+  /** Открыт ли приём работ. Если закрыто, questions приходит пустым. */
+  is_open: boolean
   questions: PublicQuestion[]
 }
 
@@ -141,6 +127,11 @@ export type ResultsOverview = {
   title: string
   teacher_name: string
   code: string
+  /** Классы, для которых создана контрольная. */
+  classes: string[]
+  shuffle: boolean
+  /** Открыт ли приём работ — этим управляет переключатель на странице. */
+  is_open: boolean
   questions_count: number
   attempts_count: number
   attempts: AttemptRow[]
