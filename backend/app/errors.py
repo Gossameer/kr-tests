@@ -3,12 +3,12 @@
 
 Зачем: по умолчанию FastAPI на неверные данные отвечает вот таким:
 
-    {"detail":[{"type":"int_parsing","loc":["body","questions",1,"correct"],
+    {"detail":[{"type":"int_parsing","loc":["body","variants",1,"tasks",0,"correct"],
                 "msg":"Input should be a valid integer", ...}]}
 
 Учителю это ни о чём не говорит. Обработчик ниже превращает такое в:
 
-    {"detail":"Вопрос 2, поле «correct»: должно быть целым числом"}
+    {"detail":"Вариант 2, задание 1, поле «correct»: значение должно быть целым числом"}
 """
 
 from fastapi import Request, status
@@ -18,16 +18,28 @@ from fastapi.responses import JSONResponse
 # Понятные названия полей вместо английских ключей JSON.
 FIELD_NAMES = {
     "title": "название (title)",
-    "questions": "список вопросов (questions)",
     "options": "варианты ответа (options)",
     "correct": "номер правильного ответа (correct)",
-    "text": "текст (text)",
+    "text": "текст задания (text)",
+    "skill_index": "номер умения (skill_index)",
+    "variant_no": "номер варианта (variant_no)",
+    "tasks_per_variant": "число заданий на умение (tasks_per_variant)",
+    "answer_format": "формат ответа (answer_format)",
+    "choices": "выбранные варианты (choices)",
+    "inputs": "введённые ответы (inputs)",
     "teacher_name": "имя учителя (teacher_name)",
     "student_name": "фамилия и имя (student_name)",
     "student_class": "класс (student_class)",
     "answers": "ответы (answers)",
     "classes": "классы (classes)",
     "shuffle": "перемешивание (shuffle)",
+    "skills": "умения (skills)",
+    "variants": "варианты (variants)",
+    "variants_count": "число вариантов (variants_count)",
+    "tasks": "задания (tasks)",
+    "accepted_answers": "правильные ответы (accepted_answers)",
+    "solution": "решение (solution)",
+    "attempt_token": "ключ попытки (attempt_token)",
 }
 
 # Человеческие формулировки для стандартных типов ошибок Pydantic.
@@ -49,22 +61,36 @@ TYPE_MESSAGES = {
 }
 
 
+# Списки, внутри которых номер элемента что-то значит для человека.
+# Ключ — имя списка в JSON, значение — как назвать его элемент.
+NUMBERED_LISTS = {
+    "variants": "Вариант",
+    "tasks": "задание",
+    "skills": "Умение",
+}
+
+
 def describe_location(loc: tuple) -> str:
     """
     Превращает путь до ошибки в человеческое описание.
 
-    ("body", "questions", 1, "correct")  ->  'Вопрос 2, поле «номер правильного ответа (correct)»'
-    ("body", "title")                    ->  'Поле «название (title)»'
-    ("body",)                            ->  '' (ошибка относится ко всей контрольной)
+    ("body", "variants", 1, "tasks", 0, "correct")
+        -> 'Вариант 2, задание 1, поле «номер правильного ответа (correct)»'
+    ("body", "skills", 0, "title") -> 'Умение 1, поле «название (title)»'
+    ("body", "title")              -> 'Поле «название (title)»'
+    ("body",)                      -> '' (ошибка относится ко всей контрольной)
     """
     # Первый элемент — всегда "body"/"query"/"path", он читателю не нужен.
     parts = [part for part in loc if part not in ("body", "query", "path")]
 
-    prefix = ""
-    # Шаблон "questions -> <номер> -> ..." означает конкретный вопрос.
-    if len(parts) >= 2 and parts[0] == "questions" and isinstance(parts[1], int):
-        prefix = f"Вопрос {parts[1] + 1}"  # в JSON индексы с нуля, человеку показываем с единицы
+    # Собираем «где»: вариант, задание, умение — в том порядке, в каком они в пути.
+    # В JSON индексы с нуля, человеку показываем с единицы.
+    places: list[str] = []
+    while len(parts) >= 2 and str(parts[0]) in NUMBERED_LISTS and isinstance(parts[1], int):
+        places.append(f"{NUMBERED_LISTS[str(parts[0])]} {parts[1] + 1}")
         parts = parts[2:]
+
+    prefix = ", ".join(places)
 
     if parts:
         field = parts[-1]

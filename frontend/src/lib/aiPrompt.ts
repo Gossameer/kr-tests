@@ -1,59 +1,138 @@
 /**
- * Готовый промт для внешнего ИИ.
+ * Промты для внешнего ИИ.
  *
- * Учитель заполняет тему, класс и число вопросов, копирует промт кнопкой и
- * вставляет в любой чат с ИИ. Ответ приносит обратно в поле «Из ИИ».
+ * Два разных: один просит составить ВСЮ контрольную по списку умений,
+ * второй — заменить ОДНО задание, если учителю не понравилось конкретное.
  *
- * Промт написан так, чтобы ИИ вернул ровно наш формат: пояснения, markdown
- * и лишний текст мы просим не добавлять (а если добавит — вырежем сами,
- * см. extractJsonBlock в lib/parseTestJson.ts).
+ * Оба просят вернуть строго наш JSON. Если ИИ всё же добавит текст вокруг
+ * или обернёт ответ в ```json — мы это вырежем сами (см. parseTestJson.ts).
  */
 
-/** Что подставляем в промт. Пустые поля остаются подсказкой в квадратных скобках. */
+import type { AnswerFormat, SkillDraft } from '../types'
+
+/** Что учитель указывает перед копированием промта. */
 export type PromptFields = {
-  topic: string
+  subject: string
   grade: string
-  count: string
 }
 
-/** Значения по умолчанию — они же видны в промте, если учитель поля не заполнил. */
-const PLACEHOLDERS: PromptFields = {
-  topic: '[ТЕМА]',
-  grade: '[КЛАСС]',
-  count: '[СКОЛЬКО]',
+const PLACEHOLDER_SUBJECT = '[ПРЕДМЕТ И ТЕМА]'
+const PLACEHOLDER_GRADE = '[КЛАСС]'
+
+/** Понятное ИИ описание формата ответа. */
+function formatRule(format: AnswerFormat): string {
+  return format === 'choice'
+    ? '"format": "choice", 4 варианта ответа в "options" и номер верного в "correct" (с нуля)'
+    : '"format": "input", список допустимых ответов в "answers"'
 }
 
-export function buildAiPrompt(fields: PromptFields): string {
-  // Пустое поле заменяем подсказкой: промт остаётся рабочим, просто учителю
-  // придётся дописать значение руками в чате с ИИ.
-  const topic = fields.topic.trim() || PLACEHOLDERS.topic
-  const grade = fields.grade.trim() || PLACEHOLDERS.grade
-  const count = fields.count.trim() || PLACEHOLDERS.count
+/** Список умений в виде, пригодном для промта. */
+function skillsBlock(skills: SkillDraft[]): string {
+  return skills
+    .map(
+      (skill, index) =>
+        `${index + 1}. ${skill.title} — заданий в каждом варианте: ` +
+        `${skill.tasksPerVariant}, формат: ${formatRule(skill.answerFormat)}`,
+    )
+    .join('\n')
+}
 
-  return `Составь контрольную работу с выбором одного правильного ответа.
+/** Промт на всю контрольную. */
+export function buildTestPrompt(
+  fields: PromptFields,
+  skills: SkillDraft[],
+  variantsCount: number,
+): string {
+  const subject = fields.subject.trim() || PLACEHOLDER_SUBJECT
+  const grade = fields.grade.trim() || PLACEHOLDER_GRADE
+  const tasksPerVariant = skills.reduce((sum, skill) => sum + skill.tasksPerVariant, 0)
 
-Тема: ${topic}
+  return `Составь контрольную работу по предмету и теме: ${subject}
 Класс: ${grade}
-Количество вопросов: ${count}
+Вариантов: ${variantsCount}
+
+Проверяемые умения (номер умения указывай в поле "skill"):
+${skillsBlock(skills)}
 
 Требования:
-- у каждого вопроса ровно 4 варианта ответа;
-- правильный вариант ровно один;
-- варианты не повторяются и не содержат подсказок вроде «все ответы верны»;
-- формулировки короткие и однозначные, по программе указанного класса.
+- в КАЖДОМ варианте должны быть задания на ВСЕ умения, ровно в указанном количестве;
+- всего заданий в каждом варианте: ${tasksPerVariant};
+- варианты равной сложности: одинаковые типы заданий, разные числа и данные;
+- задания не должны повторяться между вариантами;
+- у заданий с вводом ответа перечисли в "answers" все правильные формы записи
+  (например "0,5" и "0.5"), ответ должен быть коротким — число или несколько слов;
+- к каждому заданию добавь краткое решение в "solution" (1–2 строки, для учителя).
 
 Верни ТОЛЬКО JSON, без пояснений и без markdown, строго такой структуры:
 
 {
-  "title": "Название контрольной",
-  "questions": [
+  "variants": [
     {
-      "text": "Текст вопроса",
-      "options": ["Вариант A", "Вариант B", "Вариант C", "Вариант D"],
-      "correct": 0
+      "variant": 1,
+      "tasks": [
+        {
+          "skill": 1,
+          "text": "Текст задания",
+          "format": "input",
+          "answers": ["12", "12.0"],
+          "solution": "Краткое решение"
+        },
+        {
+          "skill": 2,
+          "text": "Текст задания",
+          "format": "choice",
+          "options": ["Вариант А", "Вариант Б", "Вариант В", "Вариант Г"],
+          "correct": 0,
+          "solution": "Краткое решение"
+        }
+      ]
     }
   ]
 }
 
-Поле correct — номер правильного варианта в массиве options, нумерация с нуля.`
+Поле "skill" — номер умения из списка выше. Поле "correct" — номер правильного
+варианта в массиве "options", нумерация с нуля.`
+}
+
+/** Промт на замену одного задания. */
+export function buildReplacePrompt(
+  fields: PromptFields,
+  skill: SkillDraft,
+  variantNo: number,
+  currentText: string,
+): string {
+  const subject = fields.subject.trim() || PLACEHOLDER_SUBJECT
+  const grade = fields.grade.trim() || PLACEHOLDER_GRADE
+
+  const shape =
+    skill.answerFormat === 'choice'
+      ? `{
+  "text": "Текст задания",
+  "format": "choice",
+  "options": ["Вариант А", "Вариант Б", "Вариант В", "Вариант Г"],
+  "correct": 0,
+  "solution": "Краткое решение"
+}`
+      : `{
+  "text": "Текст задания",
+  "format": "input",
+  "answers": ["12", "12.0"],
+  "solution": "Краткое решение"
+}`
+
+  return `Придумай ОДНО новое задание для контрольной.
+
+Предмет и тема: ${subject}
+Класс: ${grade}
+Проверяемое умение: ${skill.title}
+Формат ответа: ${formatRule(skill.answerFormat)}
+Это задание для варианта ${variantNo}.
+
+Задание, которое нужно заменить (новое должно проверять то же умение,
+быть той же сложности, но с другими числами и данными):
+${currentText.trim() || '(пока пустое)'}
+
+Верни ТОЛЬКО JSON одного задания, без пояснений и без markdown:
+
+${shape}`
 }

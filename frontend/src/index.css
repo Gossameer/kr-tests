@@ -1097,3 +1097,188 @@ code {
     width: 100%;
   }
 }
+
+/* ===================== Матрица «ученик × умение» ===================== */
+
+.matrix th {
+  /* Названия умений длинные — переносим их вместо сплошной прокрутки. */
+  white-space: normal;
+  min-width: 96px;
+  max-width: 160px;
+  vertical-align: bottom;
+}
+
+.matrix td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.matrix__skill {
+  display: table-cell;
+  min-width: 170px;
+}
+
+.matrix__title {
+  display: block;
+  font-weight: 600;
+}
+
+.matrix__total td {
+  border-top: 2px solid var(--border-strong);
+  background: var(--bg);
+}
+
+/* Ячейка с процентом: цвет — подсказка, число обязательно рядом. */
+.cellval {
+  display: inline-block;
+  min-width: 52px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.cellval--low {
+  background: var(--bad-soft);
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.cellval--mid {
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.cellval--high {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.cellval--none {
+  color: var(--muted);
+}
+
+.bar__fill--low {
+  background: var(--bad);
+}
+
+.bar__fill--mid {
+  background: var(--warn);
+}
+
+/* Фильтр по классу. */
+.chip {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--brand);
+}
+
+.chip--active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ===================== Таблица заданий при создании ===================== */
+
+.tasktable {
+  margin-top: var(--gap-m);
+}
+
+/* Клетки заданий внутри ячейки таблицы. */
+.cells {
+  display: grid;
+  gap: var(--gap-xs);
+}
+
+.cell {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-xs);
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cell:hover {
+  border-color: var(--brand);
+}
+
+.cell--ready {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.cell--empty {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.cell--active {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.cell__text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Карточка правки задания. */
+.card--task {
+  border-color: var(--brand);
+}
+
+.replace {
+  margin-top: var(--gap-l);
+  padding-top: var(--gap-m);
+  border-top: 1px dashed var(--border-strong);
+}
+
+/* ===================== Поле ответа у ученика ===================== */
+
+.answerbox {
+  margin-top: var(--gap-s);
+  max-width: 320px;
+}
+
+/* Крупное поле: ученик отвечает с телефона. */
+.input--answer {
+  font-size: 1.15rem;
+  padding: 14px;
+  text-align: center;
+}
+
+@media (max-width: 620px) {
+  .answerbox {
+    max-width: 100%;
+  }
+
+  .matrix__skill {
+    min-width: 130px;
+  }
+
+  .matrix th {
+    min-width: 76px;
+    font-size: 0.72rem;
+  }
+}

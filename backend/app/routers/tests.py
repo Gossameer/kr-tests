@@ -1,8 +1,11 @@
 """
-Роутер контрольных работ.
+Создание контрольной учителем.
 
-    POST /api/tests        — учитель публикует контрольную (JSON от ИИ)
-    GET  /api/tests/{code} — превью контрольной для учителя по короткому коду
+    POST /api/tests — принимает умения и варианты с заданиями, публикует
+                      контрольную и возвращает две ссылки: ученикам и на результаты.
+
+Эндпоинтов, отдающих правильные ответы по ученическому коду, здесь нет:
+всё, что видит учитель, живёт на его секретной ссылке (app/routers/results.py).
 """
 
 import logging
@@ -26,21 +29,17 @@ CODE_ATTEMPTS = 5
 
 
 def generate_code() -> str:
-    """
-    Случайный код для ссылки, например "k7mfp2xq".
-
-    secrets (а не random) — потому что код нельзя угадывать: по нему открывается тест.
-    """
+    """Случайный код для ссылки ученикам, например "k7mfp2xq"."""
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
 
 def generate_results_token() -> str:
     """
-    Длинный секрет для ссылки на результаты, например "xQ7...".
+    Длинный секрет для ссылки на результаты.
 
-    token_urlsafe(32) — это 32 случайных байта (256 бит) в виде строки,
-    пригодной для адреса. Перебрать такую ссылку нельзя, поэтому она и
-    работает вместо пароля, пока авторизации учителя нет.
+    token_urlsafe(32) — 32 случайных байта (256 бит) в виде строки для адреса.
+    Перебрать такую ссылку нельзя, поэтому она и работает вместо пароля,
+    пока авторизации учителя нет.
     """
     return secrets.token_urlsafe(32)
 
@@ -61,11 +60,11 @@ def db_unavailable() -> HTTPException:
 )
 def create_test(payload: TestCreate) -> TestCreated:
     """
-    Принимает JSON с вопросами, сохраняет контрольную и возвращает код ссылки.
+    Сохраняет контрольную целиком в ОДНОЙ транзакции.
 
-    Всё сохранение идёт в ОДНОЙ транзакции: либо в базе появляется целая
-    контрольная с вопросами и вариантами, либо не появляется ничего.
-    Половинчатых тестов быть не может.
+    Порядок вставки: контрольная → умения → задания по вариантам → варианты
+    ответа. Если что-то пойдёт не так на последнем шаге, откатится всё:
+    половинчатых контрольных, где часть вариантов пустая, быть не может.
     """
     try:
         pool = db.get_pool()
@@ -73,26 +72,22 @@ def create_test(payload: TestCreate) -> TestCreated:
         logger.error("Нет соединения с базой: %s", exc)
         raise db_unavailable() from exc
 
-    # Токен результатов достаточно сгенерировать один раз: повторов у него
-    # не бывает, в отличие от короткого кода.
     results_token = generate_results_token()
+    tasks_count = sum(len(variant.tasks) for variant in payload.variants)
 
     for attempt in range(CODE_ATTEMPTS):
         code = generate_code()
 
         try:
-            # `with pool.connection()` берёт соединение из пула,
-            # `with conn.transaction()` открывает транзакцию:
-            # при выходе без ошибки — COMMIT, при исключении — ROLLBACK.
             with pool.connection() as conn, conn.transaction():
-                # 1. Сама контрольная. RETURNING id сразу отдаёт присвоенный базой id.
+                # 1. Сама контрольная.
                 test_row = conn.execute(
                     """
                     INSERT INTO tests (
                         title, teacher_name, share_token, results_token,
-                        classes, shuffle, is_published
+                        classes, shuffle, variants_count, is_published
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
                     RETURNING id
                     """,
                     (
@@ -100,54 +95,100 @@ def create_test(payload: TestCreate) -> TestCreated:
                         payload.teacher_name,
                         code,
                         results_token,
-                        payload.classes,   # список Python -> массив TEXT[] в базе
+                        payload.classes,
                         payload.shuffle,
+                        payload.variants_count,
                     ),
                 ).fetchone()
                 test_id = test_row["id"]
 
-                # 2. Вопросы и их варианты. position нумеруем с 1.
-                for question_position, question in enumerate(payload.questions, start=1):
-                    question_row = conn.execute(
+                # 2. Умения. Запоминаем их id по порядковому номеру: задания
+                #    ссылаются на умение номером (skill_index), а не id.
+                skill_ids: dict[int, int] = {}
+                for number, skill in enumerate(payload.skills, start=1):
+                    skill_row = conn.execute(
                         """
-                        INSERT INTO questions (test_id, text, position)
-                        VALUES (%s, %s, %s)
+                        INSERT INTO skills (
+                            test_id, position, title, tasks_per_variant, answer_format
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (test_id, question.text, question_position),
-                    ).fetchone()
-                    question_id = question_row["id"]
-
-                    # Готовим сразу все варианты одного вопроса и вставляем пачкой.
-                    option_rows = [
                         (
-                            question_id,
-                            option_text,
-                            option_index == question.correct,  # True только у правильного
-                            option_index + 1,                  # position с 1
-                        )
-                        for option_index, option_text in enumerate(question.options)
-                    ]
-                    with conn.cursor() as cur:
-                        cur.executemany(
-                            """
-                            INSERT INTO options (question_id, text, is_correct, position)
-                            VALUES (%s, %s, %s, %s)
-                            """,
-                            option_rows,
-                        )
+                            test_id,
+                            number,
+                            skill.title,
+                            skill.tasks_per_variant,
+                            skill.answer_format,
+                        ),
+                    ).fetchone()
+                    skill_ids[number] = skill_row["id"]
 
-            logger.info("Создана контрольная id=%s, код=%s", test_id, code)
+                # 3. Задания по вариантам.
+                for variant in payload.variants:
+                    for position, task in enumerate(variant.tasks, start=1):
+                        task_row = conn.execute(
+                            """
+                            INSERT INTO tasks (
+                                test_id, skill_id, variant_no, position,
+                                text, answer_format, accepted_answers, solution
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id
+                            """,
+                            (
+                                test_id,
+                                skill_ids[task.skill_index],
+                                variant.variant_no,
+                                position,
+                                task.text,
+                                task.answer_format,
+                                task.accepted_answers,
+                                task.solution,
+                            ),
+                        ).fetchone()
+
+                        # 4. Варианты ответа — только у заданий формата «выбор».
+                        if task.answer_format == "choice":
+                            option_rows = [
+                                (
+                                    task_row["id"],
+                                    option_text,
+                                    index == task.correct,
+                                    index + 1,
+                                )
+                                for index, option_text in enumerate(task.options)
+                            ]
+                            with conn.cursor() as cur:
+                                cur.executemany(
+                                    """
+                                    INSERT INTO task_options
+                                        (task_id, text, is_correct, position)
+                                    VALUES (%s, %s, %s, %s)
+                                    """,
+                                    option_rows,
+                                )
+
+            logger.info(
+                "Создана контрольная id=%s код=%s: умений %s, вариантов %s, заданий %s",
+                test_id,
+                code,
+                len(payload.skills),
+                payload.variants_count,
+                tasks_count,
+            )
             return TestCreated(
                 id=test_id,
                 code=code,
                 results_token=results_token,
                 title=payload.title,
-                questions_count=len(payload.questions),
+                variants_count=payload.variants_count,
+                skills_count=len(payload.skills),
+                tasks_count=tasks_count,
             )
 
         except pg_errors.UniqueViolation:
-            # Такой код уже занят — вероятность крошечная, но обработать надо.
+            # Код ссылки уже занят — вероятность крошечная, но обработать надо.
             logger.warning("Код %s занят, генерирую новый (попытка %s)", code, attempt + 1)
             continue
         except Exception as exc:  # noqa: BLE001
@@ -157,21 +198,7 @@ def create_test(payload: TestCreate) -> TestCreated:
                 detail="Не удалось сохранить контрольную в базу данных.",
             ) from exc
 
-    # Сюда попадаем, только если все попытки дали занятый код.
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Не удалось сгенерировать уникальный код ссылки. Попробуйте ещё раз.",
     )
-
-
-# ---------------------------------------------------------------------
-# Здесь раньше был GET /api/tests/{code} — «превью для учителя» с полем
-# is_correct. Его убрали: ключом служил share_token, то есть тот самый код,
-# который есть у КАЖДОГО ученика. Зная свою ссылку, ученик мог запросить этот
-# адрес и увидеть все правильные ответы.
-#
-# Теперь правильные ответы отдаются только по results_token:
-#   GET /api/results/{results_token}                       — таблица и сводка
-#   GET /api/results/{results_token}/attempts/{attempt_id} — разбор работы
-# (см. app/routers/results.py). По ученическому коду их не получить.
-# ---------------------------------------------------------------------

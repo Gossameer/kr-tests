@@ -2,29 +2,27 @@
  * Страница «Создать контрольную».
  *
  * Порядок работы учителя:
- *   1. заполняет своё имя, название, классы, решает — перемешивать ли вопросы;
- *   2. набирает вопросы вручную ИЛИ приносит их из ИИ (вкладки);
- *   3. смотрит превью с подсвеченными верными ответами;
- *   4. публикует и получает две ссылки: ученикам и себе на результаты.
- *
- * Знать формат JSON учителю не нужно: вкладка «Из ИИ» даёт готовый промт,
- * а загруженные вопросы попадают в тот же редактор, что и при наборе руками.
+ *   1. шапка: название, своё имя, классы, число вариантов;
+ *   2. список умений — что именно проверяем;
+ *   3. промт для ИИ собирается из умений, числа вариантов, предмета и класса;
+ *      ответ ИИ вставляется в поле и разбирается (можно и не пользоваться ИИ);
+ *   4. экран проверки: таблица «варианты × умения», правка любого задания,
+ *      замена отдельного задания через ИИ;
+ *   5. «Опубликовать» — когда все задания заполнены.
  */
 
 import { useState } from 'react'
 import { Link } from 'react-router'
 import { createTest } from '../api'
 import CopyLink from '../components/CopyLink'
-import QuestionEditor from '../components/QuestionEditor'
-import { buildAiPrompt } from '../lib/aiPrompt'
-import { parseTestJson, validateQuestions } from '../lib/parseTestJson'
+import SkillEditor from '../components/SkillEditor'
+import TaskTable from '../components/TaskTable'
+import { buildTestPrompt } from '../lib/aiPrompt'
+import { emptyTask, parseTestJson, validateTest } from '../lib/parseTestJson'
 import { rememberTest } from '../lib/myTestsStorage'
-import type { CreatedTest, DraftQuestion } from '../types'
+import type { CreatedTest, SkillDraft, VariantDraft } from '../types'
 
-/** Какая вкладка наполнения вопросов открыта. */
-type Tab = 'manual' | 'ai'
-
-/** Разбирает «6А, 6Б 6В» в ['6А','6Б','6В'] — учителю удобно писать как привычно. */
+/** Разбирает «8А, 8Б 8В» в ['8А','8Б','8В']. */
 function parseClasses(raw: string): string[] {
   return raw
     .split(/[,;\n]+/)
@@ -33,26 +31,39 @@ function parseClasses(raw: string): string[] {
     .filter((item) => item !== '')
 }
 
+/** Создаёт пустые варианты под текущие умения — чтобы таблицу можно было заполнить руками. */
+function buildEmptyVariants(skills: SkillDraft[], variantsCount: number): VariantDraft[] {
+  return Array.from({ length: variantsCount }, (_, index) => ({
+    variantNo: index + 1,
+    tasks: skills.flatMap((skill, skillPosition) =>
+      Array.from({ length: skill.tasksPerVariant }, () =>
+        emptyTask(skillPosition + 1, skill.answerFormat),
+      ),
+    ),
+  }))
+}
+
 export default function CreateTestPage() {
-  // --- Шапка контрольной ---
+  // --- Шапка ---
   const [teacherName, setTeacherName] = useState('')
   const [title, setTitle] = useState('')
   const [classesRaw, setClassesRaw] = useState('')
+  const [variantsCount, setVariantsCount] = useState(2)
   const [shuffle, setShuffle] = useState(true)
 
-  // --- Вопросы ---
-  const [tab, setTab] = useState<Tab>('manual')
-  const [questions, setQuestions] = useState<DraftQuestion[]>([])
+  // --- Умения ---
+  const [skills, setSkills] = useState<SkillDraft[]>([])
 
-  // --- Вкладка «Из ИИ» ---
-  // Три поля, которые подставляются в промт вместо [ТЕМА], [КЛАСС], [СКОЛЬКО].
-  const [aiTopic, setAiTopic] = useState('')
-  const [aiGrade, setAiGrade] = useState('')
-  const [aiCount, setAiCount] = useState('10')
+  // --- Промт и ответ ИИ ---
+  const [subject, setSubject] = useState('')
+  const [grade, setGrade] = useState('')
   const [aiRaw, setAiRaw] = useState('')
   const [aiErrors, setAiErrors] = useState<string[]>([])
   const [aiLoaded, setAiLoaded] = useState('')
   const [promptCopied, setPromptCopied] = useState(false)
+
+  // --- Задания ---
+  const [variants, setVariants] = useState<VariantDraft[]>([])
 
   // --- Публикация ---
   const [errors, setErrors] = useState<string[]>([])
@@ -60,44 +71,54 @@ export default function CreateTestPage() {
   const [created, setCreated] = useState<CreatedTest | null>(null)
 
   const classes = parseClasses(classesRaw)
-
-  // Промт пересобирается на каждый ввод — учитель видит ровно то, что скопирует.
-  const prompt = buildAiPrompt({ topic: aiTopic, grade: aiGrade, count: aiCount })
+  const promptFields = { subject, grade }
+  const prompt = buildTestPrompt(promptFields, skills, variantsCount)
 
   async function handleCopyPrompt() {
+    if (skills.length === 0) {
+      setAiErrors(['Сначала добавьте умения — из них собирается промт.'])
+      return
+    }
     try {
       await navigator.clipboard.writeText(prompt)
       setPromptCopied(true)
+      setAiErrors([])
       window.setTimeout(() => setPromptCopied(false), 2000)
     } catch {
-      setAiErrors(['Браузер не дал скопировать — выделите текст промта и скопируйте вручную.'])
+      setAiErrors(['Браузер не дал скопировать — выделите текст промта вручную.'])
     }
   }
 
-  /** «Загрузить» на вкладке «Из ИИ»: разбираем ответ и переносим вопросы в редактор. */
+  /** Разбирает ответ ИИ и переносит задания в таблицу. */
   function handleLoadFromAi() {
     const result = parseTestJson(aiRaw)
-
     if (!result.ok) {
       setAiErrors(result.errors)
       setAiLoaded('')
       return
     }
 
-    setQuestions(result.questions)
+    setVariants(result.variants)
     setAiErrors([])
-    // Название берём из ответа ИИ, только если учитель его ещё не вписал сам.
-    if (result.title !== null && title.trim() === '') {
-      setTitle(result.title)
-    }
+    const tasksTotal = result.variants.reduce((sum, variant) => sum + variant.tasks.length, 0)
     setAiLoaded(
-      `Загружено вопросов: ${result.questions.length}. Проверьте их на вкладке «Вручную».`,
+      `Загружено вариантов: ${result.variants.length}, заданий: ${tasksTotal}. ` +
+        'Проверьте их в таблице ниже.',
     )
-    setTab('manual')
   }
 
-  /** Проверяет всю форму целиком. Возвращает список ошибок. */
-  function validateForm(): string[] {
+  /** Создаёт пустую таблицу — для тех, кто заполняет всё руками. */
+  function handleBuildEmpty() {
+    if (skills.length === 0) {
+      setErrors(['Сначала добавьте умения.'])
+      return
+    }
+    setVariants(buildEmptyVariants(skills, variantsCount))
+    setErrors([])
+    setAiLoaded('')
+  }
+
+  function validateAll(): string[] {
     const found: string[] = []
 
     if (teacherName.trim() === '') {
@@ -107,15 +128,15 @@ export default function CreateTestPage() {
       found.push('Укажите название контрольной.')
     }
     if (classes.length === 0) {
-      found.push('Укажите хотя бы один класс, например: 6А, 6Б.')
+      found.push('Укажите хотя бы один класс, например: 8А, 8Б.')
     }
-    found.push(...validateQuestions(questions))
+    found.push(...validateTest(skills, variantsCount, variants))
 
     return found
   }
 
   async function handlePublish() {
-    const found = validateForm()
+    const found = validateAll()
     if (found.length > 0) {
       setErrors(found)
       return
@@ -129,22 +150,35 @@ export default function CreateTestPage() {
         title: title.trim(),
         teacher_name: teacherName.trim(),
         classes,
+        variants_count: variantsCount,
         shuffle,
-        // Пробелы по краям убираем здесь, чтобы в базу не попало « 56 ».
-        questions: questions.map((question) => ({
-          text: question.text.trim(),
-          options: question.options.map((option) => option.trim()),
-          correct: question.correct,
+        skills: skills.map((skill) => ({
+          title: skill.title.trim(),
+          tasks_per_variant: skill.tasksPerVariant,
+          answer_format: skill.answerFormat,
+        })),
+        variants: variants.map((variant) => ({
+          variant_no: variant.variantNo,
+          tasks: variant.tasks.map((task) => ({
+            skill_index: task.skillIndex,
+            text: task.text.trim(),
+            answer_format: task.answerFormat,
+            options: task.options.map((option) => option.trim()),
+            correct: task.correct,
+            accepted_answers: task.acceptedAnswers
+              .map((answer) => answer.trim())
+              .filter((answer) => answer !== ''),
+            solution: task.solution.trim(),
+          })),
         })),
       })
 
       setCreated(result)
-      // Запоминаем контрольную в этом браузере, чтобы ссылки не потерялись.
       rememberTest({
         code: result.code,
         resultsToken: result.results_token,
         title: result.title,
-        questionsCount: result.questions_count,
+        questionsCount: result.tasks_count,
         createdAt: new Date().toISOString(),
       })
     } catch (error: unknown) {
@@ -157,17 +191,14 @@ export default function CreateTestPage() {
   function handleReset() {
     setTitle('')
     setClassesRaw('')
-    setQuestions([])
-    setAiTopic('')
-    setAiGrade('')
-    setAiCount('10')
+    setSkills([])
+    setVariants([])
     setAiRaw('')
     setAiErrors([])
     setAiLoaded('')
     setErrors([])
     setCreated(null)
-    setTab('manual')
-    // Имя учителя намеренно оставляем: он создаёт контрольные подряд.
+    // Имя учителя, предмет и класс оставляем: контрольные создают подряд.
   }
 
   const studentUrl = created ? `${window.location.origin}/t/${created.code}` : ''
@@ -181,22 +212,23 @@ export default function CreateTestPage() {
       <main className="page">
         <h1>Контрольная опубликована</h1>
         <p className="lead">
-          «{created.title}», вопросов: {created.questions_count}. Код: <code>{created.code}</code>
+          «{created.title}»: умений {created.skills_count}, вариантов{' '}
+          {created.variants_count}, заданий всего {created.tasks_count}. Код:{' '}
+          <code>{created.code}</code>
         </p>
 
         <section className="card card--success">
           <CopyLink
             label="Для учеников"
             url={studentUrl}
-            hint="Эту ссылку отправьте классу — по ней открывается сам тест."
+            hint="Эту ссылку отправьте классу — вариант выдаётся каждому автоматически."
           />
-
           <CopyLink
             secret
             label="Результаты — только для вас, не отправляйте ученикам"
             url={resultsUrl}
             hint={
-              'По этой ссылке видны все работы и правильные ответы. ' +
+              'По этой ссылке видны все работы, правильные ответы и решения. ' +
               'Она сохранена в списке «Мои контрольные» на главной странице этого браузера.'
             }
           />
@@ -218,10 +250,10 @@ export default function CreateTestPage() {
   }
 
   // ------------------------------------------------------------------
-  // Основной экран создания
+  // Основной экран
   // ------------------------------------------------------------------
   return (
-    <main className="page">
+    <main className="page page--wide">
       <p>
         <Link className="backlink" to="/">
           ← На главную
@@ -230,13 +262,13 @@ export default function CreateTestPage() {
 
       <h1>Создать контрольную</h1>
       <p className="lead">
-        Заполните шапку, наберите вопросы вручную или принесите их из ИИ, проверьте
-        правильные ответы и опубликуйте.
+        Опишите умения, которые проверяете, — задания по ним составит ИИ или вы сами.
+        У каждого ученика будет свой вариант.
       </p>
 
-      {/* ------------------------- Шапка ------------------------- */}
+      {/* ------------------------- 1. Шапка ------------------------- */}
       <section className="card">
-        <h2>О контрольной</h2>
+        <h2>1. О контрольной</h2>
 
         <div className="fields">
           <div className="field">
@@ -251,7 +283,6 @@ export default function CreateTestPage() {
               placeholder="Иванова Анна Петровна"
               autoComplete="name"
             />
-            <p className="hint">Ученики увидят это имя на странице теста.</p>
           </div>
 
           <div className="field">
@@ -263,10 +294,12 @@ export default function CreateTestPage() {
               className="input"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              placeholder="Дроби. Контрольная №2"
+              placeholder="Квадратные уравнения. Контрольная №2"
             />
           </div>
+        </div>
 
+        <div className="fields fields--inline">
           <div className="field">
             <label className="label" htmlFor="test-classes">
               Классы
@@ -276,12 +309,30 @@ export default function CreateTestPage() {
               className="input"
               value={classesRaw}
               onChange={(event) => setClassesRaw(event.target.value)}
-              placeholder="6А, 6Б"
+              placeholder="8А, 8Б"
             />
             <p className="hint">
               Через запятую. Ученик выберет свой класс из этого списка.
               {classes.length > 0 && <> Сейчас: {classes.join(', ')}.</>}
             </p>
+          </div>
+
+          <div className="field field--narrow">
+            <label className="label" htmlFor="variants-count">
+              Вариантов
+            </label>
+            <input
+              id="variants-count"
+              className="input"
+              type="number"
+              min={1}
+              max={20}
+              value={variantsCount}
+              onChange={(event) =>
+                setVariantsCount(Math.min(20, Math.max(1, Number(event.target.value) || 1)))
+              }
+            />
+            <p className="hint">выдаются по кругу</p>
           </div>
         </div>
 
@@ -292,183 +343,121 @@ export default function CreateTestPage() {
             onChange={(event) => setShuffle(event.target.checked)}
           />
           <span>
-            Перемешивать вопросы и варианты
-            <span className="hint"> — у каждого ученика свой порядок, списать сложнее</span>
+            Перемешивать порядок заданий внутри варианта
+            <span className="hint"> — соседям сложнее сверяться</span>
           </span>
         </label>
       </section>
 
-      {/* ------------------------- Вопросы ------------------------- */}
+      {/* ------------------------- 2. Умения ------------------------- */}
       <section className="card">
-        <h2>Вопросы</h2>
+        <h2>2. Какие умения проверяем</h2>
+        <p className="muted">
+          По каждому умению будет столько заданий в каждом варианте, сколько укажете.
+          Именно по умениям потом строится таблица результатов.
+        </p>
+        <SkillEditor skills={skills} onChange={setSkills} />
+      </section>
 
-        <div className="tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'manual'}
-            className={tab === 'manual' ? 'tab tab--active' : 'tab'}
-            onClick={() => setTab('manual')}
-          >
-            Вручную
-            {questions.length > 0 && <span className="tab__badge">{questions.length}</span>}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'ai'}
-            className={tab === 'ai' ? 'tab tab--active' : 'tab'}
-            onClick={() => setTab('ai')}
-          >
-            Из ИИ
-          </button>
+      {/* ------------------------- 3. Задания ------------------------- */}
+      <section className="card">
+        <h2>3. Задания</h2>
+
+        <div className="fields fields--inline">
+          <div className="field">
+            <label className="label" htmlFor="ai-subject">
+              Предмет и тема
+            </label>
+            <input
+              id="ai-subject"
+              className="input"
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="Алгебра, квадратные уравнения"
+            />
+          </div>
+          <div className="field field--narrow">
+            <label className="label" htmlFor="ai-grade">
+              Класс
+            </label>
+            <input
+              id="ai-grade"
+              className="input"
+              value={grade}
+              onChange={(event) => setGrade(event.target.value)}
+              placeholder="8"
+            />
+          </div>
         </div>
 
-        {tab === 'manual' && (
-          <>
-            {aiLoaded !== '' && <p className="notice">{aiLoaded}</p>}
-            <QuestionEditor questions={questions} onChange={setQuestions} />
-          </>
-        )}
+        <ol className="steps">
+          <li>
+            Скопируйте промт и вставьте его в любой чат с ИИ. Промт собран из ваших
+            умений и числа вариантов.
+            <div className="row row--tight">
+              <button type="button" className="btn btn--primary" onClick={handleCopyPrompt}>
+                Скопировать промт для ИИ
+              </button>
+              {promptCopied && <span className="copied">Скопировано</span>}
+              <button type="button" className="btn btn--ghost" onClick={handleBuildEmpty}>
+                Заполню сам, без ИИ
+              </button>
+            </div>
+            <details className="details">
+              <summary>Посмотреть промт</summary>
+              <pre className="pre">{prompt}</pre>
+            </details>
+          </li>
 
-        {tab === 'ai' && (
-          <div className="aitab">
-            <ol className="steps">
-              <li>
-                Заполните три поля — они подставятся в промт автоматически.
-                <div className="fields fields--inline">
-                  <div className="field">
-                    <label className="label" htmlFor="ai-topic">
-                      Тема
-                    </label>
-                    <input
-                      id="ai-topic"
-                      className="input"
-                      value={aiTopic}
-                      onChange={(event) => setAiTopic(event.target.value)}
-                      placeholder="Дроби и проценты"
-                    />
-                  </div>
+          <li>
+            Вставьте ответ ИИ целиком — лишний текст и оформление вокруг JSON уберём сами.
+            <textarea
+              className="textarea"
+              value={aiRaw}
+              onChange={(event) => {
+                setAiRaw(event.target.value)
+                setAiErrors([])
+              }}
+              placeholder='{ "variants": [ { "variant": 1, "tasks": [ ... ] } ] }'
+              spellCheck={false}
+              rows={8}
+            />
+            <div className="row row--tight">
+              <button type="button" className="btn btn--primary" onClick={handleLoadFromAi}>
+                Загрузить задания
+              </button>
+            </div>
+          </li>
+        </ol>
 
-                  <div className="field field--narrow">
-                    <label className="label" htmlFor="ai-grade">
-                      Класс
-                    </label>
-                    <input
-                      id="ai-grade"
-                      className="input"
-                      value={aiGrade}
-                      onChange={(event) => setAiGrade(event.target.value)}
-                      placeholder="6"
-                    />
-                  </div>
+        {aiLoaded !== '' && <p className="notice">{aiLoaded}</p>}
 
-                  <div className="field field--narrow">
-                    <label className="label" htmlFor="ai-count">
-                      Вопросов
-                    </label>
-                    <input
-                      id="ai-count"
-                      className="input"
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={aiCount}
-                      onChange={(event) => setAiCount(event.target.value)}
-                    />
-                  </div>
-                </div>
-                <p className="hint">
-                  Незаполненное поле останется в промте подсказкой в квадратных скобках —
-                  её можно дописать прямо в чате с ИИ.
-                </p>
-
-                <div className="row">
-                  <button type="button" className="btn btn--primary" onClick={handleCopyPrompt}>
-                    Скопировать промт для ИИ
-                  </button>
-                  {promptCopied && <span className="copied">Скопировано</span>}
-                </div>
-                <details className="details">
-                  <summary>Посмотреть промт</summary>
-                  <pre className="pre">{prompt}</pre>
-                </details>
-              </li>
-              <li>
-                Скопируйте промт и вставьте его в любой чат с ИИ.
-              </li>
-              <li>
-                Вставьте сюда ответ ИИ целиком — лишний текст и оформление вокруг JSON
-                мы уберём сами.
-                <textarea
-                  className="textarea"
-                  value={aiRaw}
-                  onChange={(event) => {
-                    setAiRaw(event.target.value)
-                    setAiErrors([])
-                  }}
-                  placeholder='{ "title": "...", "questions": [ ... ] }'
-                  spellCheck={false}
-                  rows={10}
-                />
-                <div className="row">
-                  <button type="button" className="btn btn--primary" onClick={handleLoadFromAi}>
-                    Загрузить
-                  </button>
-                  <span className="hint">Вопросы попадут в редактор на вкладке «Вручную».</span>
-                </div>
-              </li>
-            </ol>
-
-            {aiErrors.length > 0 && (
-              <div className="alert alert--error">
-                <h3>Не получилось прочитать ответ ИИ</h3>
-                <ul>
-                  {aiErrors.map((message, index) => (
-                    <li key={index}>{message}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+        {aiErrors.length > 0 && (
+          <div className="alert alert--error">
+            <h3>Не получилось прочитать ответ ИИ</h3>
+            <ul>
+              {aiErrors.map((message, index) => (
+                <li key={index}>{message}</li>
+              ))}
+            </ul>
           </div>
         )}
       </section>
 
-      {/* ------------------------- Превью ------------------------- */}
-      {questions.length > 0 && (
+      {/* ------------------------- 4. Проверка ------------------------- */}
+      {variants.length > 0 && skills.length > 0 && (
         <section className="card">
-          <h2>Превью</h2>
+          <h2>4. Проверка заданий</h2>
           <p className="muted">
-            Так контрольную увидит ученик{shuffle ? ' (порядок у него будет другим)' : ''}.
-            Правильный ответ подсвечен зелёным — проверьте каждый.
+            Проверьте каждое задание: ИИ ошибается и в условиях, и в ответах. Любое
+            можно поправить руками или заменить новым.
           </p>
-
-          <ol className="questions">
-            {questions.map((question, questionIndex) => (
-              <li key={questionIndex} className="question">
-                <p className="question__text">
-                  {questionIndex + 1}. {question.text || <i>без текста</i>}
-                </p>
-                <ul className="options">
-                  {question.options.map((option, optionIndex) => {
-                    const isCorrect = optionIndex === question.correct
-                    return (
-                      <li
-                        key={optionIndex}
-                        className={isCorrect ? 'option option--correct' : 'option'}
-                      >
-                        <span className="option__letter">
-                          {'АБВГДЕЖЗИК'[optionIndex] ?? optionIndex + 1}
-                        </span>
-                        <span className="option__text">{option || <i>пусто</i>}</span>
-                        {isCorrect && <span className="option__mark">✓ верный</span>}
-                      </li>
-                    )
-                  })}
-                </ul>
-              </li>
-            ))}
-          </ol>
+          <TaskTable
+            skills={skills}
+            variants={variants}
+            promptFields={promptFields}
+            onChange={setVariants}
+          />
         </section>
       )}
 

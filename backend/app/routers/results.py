@@ -1,13 +1,15 @@
 """
 Роутер результатов — то, что видит УЧИТЕЛЬ по секретной ссылке.
 
-    GET /api/results/{results_token}                        — таблица сдавших + сводка
-    GET /api/results/{results_token}/attempts/{attempt_id}  — детали одной работы
-    GET /api/results/{results_token}/export.xlsx            — выгрузка в Excel
+    GET    /api/results/{token}                      — таблица учеников и умений
+    GET    /api/results/{token}/attempts/{id}        — разбор одной работы
+    GET    /api/results/{token}/export.xlsx          — выгрузка в Excel (3 листа)
+    PATCH  /api/results/{token}                      — открыть/закрыть приём работ
+    DELETE /api/results/{token}/attempts/{id}        — удалить работу (разрешить пересдачу)
+    DELETE /api/results/{token}?confirm_title=...    — удалить контрольную целиком
 
-Доступ: авторизации пока нет, вместо неё длинный секрет в адресе.
-Искать контрольную здесь можно ТОЛЬКО по results_token — ученический
-share_token в этих запросах не сработает, потому что это разные колонки.
+Доступ: авторизации пока нет, вместо неё длинный секрет в адресе. Искать
+контрольную здесь можно ТОЛЬКО по results_token — ученический код не подойдёт.
 """
 
 import io
@@ -16,7 +18,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from app import db
 from app.schemas import (
@@ -30,14 +32,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/results", tags=["results"])
 
-# Минимальная длина токена. Ученический код — 8 символов, он сюда не подойдёт
-# и по длине, но проверку всё равно делает база: 404 вместо результатов.
+# Ученический код — 8 символов; он не подойдёт и по длине, но проверку
+# всё равно делает база: 404 вместо результатов.
 TOKEN_MIN_LEN = 8
 TOKEN_MAX_LEN = 200
 
+# Пороги освоения умения. Ниже 50% — не сформировано, выше 65% — в порядке.
+LEVEL_LOW = 50
+LEVEL_MID = 65
+
+# Заливка ячеек в Excel теми же порогами, что и цвета на экране.
+FILL_LOW = PatternFill("solid", fgColor="F8CBCB")
+FILL_MID = PatternFill("solid", fgColor="FFE9B0")
+FILL_HIGH = PatternFill("solid", fgColor="CDEBD3")
+
 
 def db_unavailable() -> HTTPException:
-    """Одинаковый понятный ответ, когда база не отвечает."""
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="База данных недоступна. Проверьте, что PostgreSQL запущен.",
@@ -45,30 +55,34 @@ def db_unavailable() -> HTTPException:
 
 
 def results_not_found() -> HTTPException:
-    """
-    404 на неверный токен.
-
-    Текст без подробностей: по ответу нельзя понять, существует ли такая
-    контрольная. Это важно, ведь ссылка заменяет пароль.
-    """
+    """404 на неверный токен, без подробностей: ссылка заменяет пароль."""
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Результаты не найдены. Проверьте ссылку — она отличается от ученической.",
     )
 
 
-def percent_of(score: int | None, max_score: int | None) -> int:
-    """Процент верных ответов, округлённый до целого. Без деления на ноль."""
-    if not score or not max_score:
+def percent_of(correct: int | None, total: int | None) -> int:
+    """Процент, округлённый до целого. Без деления на ноль."""
+    if not correct or not total:
         return 0
-    return round(score * 100 / max_score)
+    return round(correct * 100 / total)
+
+
+def fill_for(percent: int) -> PatternFill:
+    """Заливка ячейки по проценту выполнения."""
+    if percent < LEVEL_LOW:
+        return FILL_LOW
+    if percent <= LEVEL_MID:
+        return FILL_MID
+    return FILL_HIGH
 
 
 def load_test_by_results_token(conn, results_token: str) -> dict:
     """Находит контрольную по СЕКРЕТНОМУ токену результатов или бросает 404."""
     row = conn.execute(
         """
-        SELECT id, title, teacher_name, share_token, classes, shuffle, is_open
+        SELECT id, title, teacher_name, share_token, classes, is_open, variants_count
         FROM tests
         WHERE results_token = %s
         """,
@@ -81,11 +95,24 @@ def load_test_by_results_token(conn, results_token: str) -> dict:
     return row
 
 
-def load_attempt_rows(conn, test_id: int) -> list[dict]:
+def load_skills(conn, test_id: int) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT id, position, title, tasks_per_variant, answer_format
+        FROM skills
+        WHERE test_id = %s
+        ORDER BY position, id
+        """,
+        (test_id,),
+    ).fetchall()
+
+
+def load_attempts(conn, test_id: int) -> list[dict]:
     """Список сдавших: сортировка по классу, затем по фамилии и имени."""
     return conn.execute(
         """
-        SELECT id, student_name, student_class, score, max_score, finished_at
+        SELECT id, student_name, student_class, variant_no,
+               score, max_score, finished_at
         FROM attempts
         WHERE test_id = %s
         ORDER BY student_class, student_name, id
@@ -94,44 +121,83 @@ def load_attempt_rows(conn, test_id: int) -> list[dict]:
     ).fetchall()
 
 
-def load_question_stats(conn, test_id: int) -> list[dict]:
+def load_skill_matrix(conn, test_id: int) -> dict[tuple[int, int], dict]:
     """
-    Сводка по вопросам: сколько ответили верно, неверно и сколько пропустили.
+    Сколько заданий каждого умения решил каждый ученик.
 
-    LEFT JOIN — чтобы вопрос попал в сводку даже если его никто не решал.
-    count(a.id) FILTER (...) считает только существующие строки ответов,
-    поэтому у нерешавшегося вопроса получаются честные нули.
+    Возвращает {(id попытки, id умения): {"correct": n, "total": m}}.
+    Считаем по таблице answers: там уже лежит готовый вердикт, пересчитывать
+    ответы на каждый показ таблицы незачем.
     """
-    return conn.execute(
+    rows = conn.execute(
         """
-        SELECT
-            q.id,
-            q.position,
-            q.text,
-            count(a.id) FILTER (WHERE o.is_correct)                  AS correct_count,
-            count(a.id) FILTER (WHERE a.option_id IS NOT NULL
-                                  AND NOT o.is_correct)              AS wrong_count,
-            count(a.id) FILTER (WHERE a.option_id IS NULL)           AS skipped_count
-        FROM questions q
-        LEFT JOIN answers a ON a.question_id = q.id
-        LEFT JOIN options o ON o.id = a.option_id
-        WHERE q.test_id = %s
-        GROUP BY q.id, q.position, q.text
-        ORDER BY q.position, q.id
+        SELECT ans.attempt_id,
+               t.skill_id,
+               count(*)                          AS total,
+               count(*) FILTER (WHERE ans.is_correct) AS correct
+        FROM answers ans
+        JOIN tasks t      ON t.id = ans.task_id
+        JOIN attempts att ON att.id = ans.attempt_id
+        WHERE att.test_id = %s
+        GROUP BY ans.attempt_id, t.skill_id
         """,
         (test_id,),
     ).fetchall()
+
+    return {
+        (row["attempt_id"], row["skill_id"]): {
+            "correct": row["correct"],
+            "total": row["total"],
+        }
+        for row in rows
+    }
+
+
+def load_skill_stats(conn, test_id: int, skills: list[dict]) -> list[dict]:
+    """Сводка по умениям в целом: сколько заданий решено верно по всем работам."""
+    rows = conn.execute(
+        """
+        SELECT t.skill_id,
+               count(*)                          AS total,
+               count(*) FILTER (WHERE ans.is_correct) AS correct
+        FROM answers ans
+        JOIN tasks t      ON t.id = ans.task_id
+        JOIN attempts att ON att.id = ans.attempt_id
+        WHERE att.test_id = %s
+        GROUP BY t.skill_id
+        """,
+        (test_id,),
+    ).fetchall()
+
+    by_skill = {row["skill_id"]: row for row in rows}
+
+    stats = []
+    for skill in skills:
+        row = by_skill.get(skill["id"])
+        correct = row["correct"] if row else 0
+        total = row["total"] if row else 0
+        stats.append(
+            {
+                "skill_id": skill["id"],
+                "position": skill["position"],
+                "title": skill["title"],
+                "correct": correct,
+                "total": total,
+                "percent": percent_of(correct, total),
+            }
+        )
+    return stats
 
 
 @router.get(
     "/{results_token}",
     response_model=ResultsOverview,
-    summary="Таблица сдавших и сводка по вопросам",
+    summary="Таблица учеников, матрица умений и сводка",
 )
 def get_results(
     results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
 ) -> ResultsOverview:
-    """Всё, что нужно для главного экрана результатов, одним запросом."""
+    """Всё, что нужно главному экрану результатов, одним запросом."""
     try:
         pool = db.get_pool()
     except Exception as exc:  # noqa: BLE001
@@ -139,65 +205,119 @@ def get_results(
 
     with pool.connection() as conn:
         test_row = load_test_by_results_token(conn, results_token)
+        skills = load_skills(conn, test_row["id"])
+        attempt_rows = load_attempts(conn, test_row["id"])
+        matrix = load_skill_matrix(conn, test_row["id"])
+        skill_stats = load_skill_stats(conn, test_row["id"], skills)
 
-        questions_count = conn.execute(
-            "SELECT count(*) AS n FROM questions WHERE test_id = %s",
-            (test_row["id"],),
-        ).fetchone()["n"]
+    attempts = []
+    for attempt in attempt_rows:
+        # Процент по каждому умению для этого ученика.
+        skill_percents: dict[int, int] = {}
+        for skill in skills:
+            cell = matrix.get((attempt["id"], skill["id"]))
+            if cell is not None:
+                skill_percents[skill["id"]] = percent_of(cell["correct"], cell["total"])
 
-        attempt_rows = load_attempt_rows(conn, test_row["id"])
-        stat_rows = load_question_stats(conn, test_row["id"])
+        attempts.append(
+            {
+                "attempt_id": attempt["id"],
+                "student_name": attempt["student_name"],
+                "student_class": attempt["student_class"],
+                "variant_no": attempt["variant_no"],
+                "score": attempt["score"] or 0,
+                "max_score": attempt["max_score"] or 0,
+                "percent": percent_of(attempt["score"], attempt["max_score"]),
+                "finished_at": attempt["finished_at"],
+                "skill_percents": skill_percents,
+            }
+        )
 
     return ResultsOverview(
         title=test_row["title"],
         teacher_name=test_row["teacher_name"],
         code=test_row["share_token"],
         classes=test_row["classes"],
-        shuffle=test_row["shuffle"],
+        variants_count=test_row["variants_count"],
         is_open=test_row["is_open"],
-        questions_count=questions_count,
-        attempts_count=len(attempt_rows),
-        attempts=[
-            {
-                "attempt_id": row["id"],
-                "student_name": row["student_name"],
-                "student_class": row["student_class"],
-                "score": row["score"] or 0,
-                "max_score": row["max_score"] or questions_count,
-                "percent": percent_of(row["score"], row["max_score"]),
-                "finished_at": row["finished_at"],
-            }
-            for row in attempt_rows
-        ],
-        question_stats=[
-            {
-                "question_id": row["id"],
-                "position": row["position"],
-                "text": row["text"],
-                "correct_count": row["correct_count"],
-                "wrong_count": row["wrong_count"],
-                "skipped_count": row["skipped_count"],
-            }
-            for row in stat_rows
-        ],
+        skills=skills,
+        attempts_count=len(attempts),
+        attempts=attempts,
+        skill_stats=skill_stats,
     )
+
+
+def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> list[dict]:
+    """
+    Разбор работы: по каждому заданию варианта — ответ ученика и правильный ответ.
+
+    Здесь правильные ответы показывать МОЖНО: это экран учителя, защищённый
+    секретной ссылкой. В публичном роутере их нет.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            t.id                AS task_id,
+            t.position          AS position,
+            t.text              AS text,
+            t.answer_format     AS answer_format,
+            t.accepted_answers  AS accepted_answers,
+            t.solution          AS solution,
+            s.title             AS skill_title,
+            chosen.text         AS chosen_text,
+            right_option.text   AS right_option_text,
+            ans.answer_text     AS answer_text,
+            ans.id IS NOT NULL  AS has_row,
+            COALESCE(ans.is_correct, FALSE) AS is_correct
+        FROM tasks t
+        JOIN skills s ON s.id = t.skill_id
+        LEFT JOIN answers ans        ON ans.task_id = t.id AND ans.attempt_id = %s
+        LEFT JOIN task_options chosen ON chosen.id = ans.option_id
+        LEFT JOIN task_options right_option
+               ON right_option.task_id = t.id AND right_option.is_correct
+        WHERE t.test_id = %s AND t.variant_no = %s
+        ORDER BY t.position, t.id
+        """,
+        (attempt_id, test_id, variant_no),
+    ).fetchall()
+
+    items = []
+    for row in rows:
+        if row["answer_format"] == "choice":
+            student_answer = row["chosen_text"]
+            correct_answer = row["right_option_text"] or ""
+        else:
+            student_answer = row["answer_text"]
+            # Допустимых ответов может быть несколько — показываем все.
+            correct_answer = " / ".join(row["accepted_answers"])
+
+        items.append(
+            {
+                "task_id": row["task_id"],
+                "position": row["position"],
+                "skill_title": row["skill_title"],
+                "text": row["text"],
+                "answer_format": row["answer_format"],
+                "student_answer": student_answer,
+                "correct_answer": correct_answer,
+                "solution": row["solution"],
+                "answered": bool(student_answer),
+                "is_correct": row["is_correct"],
+            }
+        )
+
+    return items
 
 
 @router.get(
     "/{results_token}/attempts/{attempt_id}",
     response_model=AttemptDetail,
-    summary="Детали одной работы",
+    summary="Разбор одной работы",
 )
 def get_attempt_detail(
     results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
     attempt_id: int = Path(ge=1),
 ) -> AttemptDetail:
-    """
-    По каждому вопросу: что выбрал ученик, что было правильным, верно или нет.
-
-    Здесь правильные ответы показывать можно — это экран учителя, защищённый
-    секретной ссылкой. В публичном роутере (app/routers/public.py) их нет.
-    """
     try:
         pool = db.get_pool()
     except Exception as exc:  # noqa: BLE001
@@ -206,11 +326,12 @@ def get_attempt_detail(
     with pool.connection() as conn:
         test_row = load_test_by_results_token(conn, results_token)
 
-        # Проверяем, что работа относится ИМЕННО к этой контрольной: иначе по одному
-        # токену можно было бы листать работы из чужих тестов, подставляя id.
+        # test_id в условии обязателен: иначе по одному токену можно было бы
+        # листать работы из чужих контрольных, подставляя id.
         attempt_row = conn.execute(
             """
-            SELECT id, student_name, student_class, score, max_score, finished_at
+            SELECT id, student_name, student_class, variant_no,
+                   score, max_score, finished_at
             FROM attempts
             WHERE id = %s AND test_id = %s
             """,
@@ -223,57 +344,26 @@ def get_attempt_detail(
                 detail="Такая работа в этой контрольной не найдена.",
             )
 
-        # Один запрос на все вопросы работы:
-        #   chosen  — вариант, который выбрал ученик (может не быть строки → пропуск),
-        #   correct — правильный вариант этого вопроса.
-        item_rows = conn.execute(
-            """
-            SELECT
-                q.id                AS question_id,
-                q.position          AS position,
-                q.text              AS question_text,
-                chosen.text         AS chosen_option_text,
-                correct.text        AS correct_option_text,
-                (a.option_id IS NOT NULL)          AS answered,
-                COALESCE(chosen.is_correct, FALSE) AS is_correct
-            FROM questions q
-            LEFT JOIN answers a  ON a.question_id = q.id AND a.attempt_id = %s
-            LEFT JOIN options chosen  ON chosen.id = a.option_id
-            LEFT JOIN options correct ON correct.question_id = q.id
-                                     AND correct.is_correct
-            WHERE q.test_id = %s
-            ORDER BY q.position, q.id
-            """,
-            (attempt_id, test_row["id"]),
-        ).fetchall()
+        items = load_attempt_items(
+            conn, attempt_id, test_row["id"], attempt_row["variant_no"]
+        )
 
     return AttemptDetail(
         attempt_id=attempt_row["id"],
         student_name=attempt_row["student_name"],
         student_class=attempt_row["student_class"],
+        variant_no=attempt_row["variant_no"],
         score=attempt_row["score"] or 0,
-        max_score=attempt_row["max_score"] or len(item_rows),
+        max_score=attempt_row["max_score"] or len(items),
         percent=percent_of(attempt_row["score"], attempt_row["max_score"]),
         finished_at=attempt_row["finished_at"],
-        items=[
-            {
-                "question_id": row["question_id"],
-                "position": row["position"],
-                "question_text": row["question_text"],
-                "chosen_option_text": row["chosen_option_text"],
-                "correct_option_text": row["correct_option_text"],
-                "answered": row["answered"],
-                "is_correct": row["is_correct"],
-            }
-            for row in item_rows
-        ],
+        items=items,
     )
 
 
 @router.get(
     "/{results_token}/export.xlsx",
-    summary="Выгрузить таблицу результатов в Excel",
-    # Описываем ответ вручную: это файл, а не JSON, и схемы у него нет.
+    summary="Выгрузить результаты в Excel",
     response_class=Response,
     responses={
         200: {
@@ -288,10 +378,10 @@ def export_results(
     results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
 ) -> Response:
     """
-    Собирает .xlsx в памяти и отдаёт файлом.
-
-    Столбцы: ФИО, класс, балл, процент, время сдачи, затем по одному столбцу
-    на каждый вопрос: «+» верно, «−» неверно, пусто — вопрос пропущен.
+    Три листа:
+      «Ученики» — класс, ФИО, вариант, балл, процент, время сдачи;
+      «Умения»  — матрица «ученик × умение» с цветом и строкой по классу;
+      «Задания» — все задания по вариантам с ответом, решением и статистикой.
     """
     try:
         pool = db.get_pool()
@@ -300,138 +390,165 @@ def export_results(
 
     with pool.connection() as conn:
         test_row = load_test_by_results_token(conn, results_token)
+        test_id = test_row["id"]
 
-        question_rows = conn.execute(
+        skills = load_skills(conn, test_id)
+        attempts = load_attempts(conn, test_id)
+        matrix = load_skill_matrix(conn, test_id)
+        skill_stats = load_skill_stats(conn, test_id, skills)
+
+        # Все задания с их статистикой — для третьего листа.
+        task_rows = conn.execute(
             """
-            SELECT id, position
-            FROM questions
-            WHERE test_id = %s
-            ORDER BY position, id
+            SELECT t.id, t.variant_no, t.position, t.text, t.answer_format,
+                   t.accepted_answers, t.solution, s.title AS skill_title,
+                   right_option.text AS right_option_text,
+                   count(ans.id)                          AS answered,
+                   count(ans.id) FILTER (WHERE ans.is_correct) AS correct
+            FROM tasks t
+            JOIN skills s ON s.id = t.skill_id
+            LEFT JOIN task_options right_option
+                   ON right_option.task_id = t.id AND right_option.is_correct
+            LEFT JOIN answers ans ON ans.task_id = t.id
+            WHERE t.test_id = %s
+            GROUP BY t.id, t.variant_no, t.position, t.text, t.answer_format,
+                     t.accepted_answers, t.solution, s.title, right_option.text
+            ORDER BY t.variant_no, t.position, t.id
             """,
-            (test_row["id"],),
+            (test_id,),
         ).fetchall()
 
-        attempt_rows = load_attempt_rows(conn, test_row["id"])
-
-        # Все ответы всех работ этой контрольной — одним запросом,
-        # чтобы не дёргать базу по разу на ученика.
-        answer_rows = conn.execute(
-            """
-            SELECT
-                a.attempt_id,
-                a.question_id,
-                (a.option_id IS NOT NULL)      AS answered,
-                COALESCE(o.is_correct, FALSE)  AS is_correct
-            FROM answers a
-            JOIN attempts att ON att.id = a.attempt_id
-            LEFT JOIN options o ON o.id = a.option_id
-            WHERE att.test_id = %s
-            """,
-            (test_row["id"],),
-        ).fetchall()
-
-    # Отметка по каждой паре (работа, вопрос): «+», «−» или пусто.
-    marks: dict[tuple[int, int], str] = {}
-    for row in answer_rows:
-        if not row["answered"]:
-            mark = ""  # вопрос пропущен
-        elif row["is_correct"]:
-            mark = "+"
-        else:
-            mark = "−"
-        marks[(row["attempt_id"], row["question_id"])] = mark
-
-    # --- Собираем сам файл ------------------------------------------------
     workbook = Workbook()
+
+    # ---------- Лист 1: ученики ----------
     sheet = workbook.active
-    sheet.title = "Результаты"
+    sheet.title = "Ученики"
+    sheet.append(["Класс", "ФИО", "Вариант", "Балл", "Максимум", "%", "Время сдачи"])
 
-    header = ["ФИО", "Класс", "Балл", "Максимум", "%", "Время сдачи"]
-    header += [f"В{row['position']}" for row in question_rows]
-    sheet.append(header)
-
-    for attempt in attempt_rows:
+    for attempt in attempts:
         finished: datetime | None = attempt["finished_at"]
-        row_values = [
-            attempt["student_name"],
-            attempt["student_class"],
-            attempt["score"] or 0,
-            attempt["max_score"] or len(question_rows),
-            percent_of(attempt["score"], attempt["max_score"]),
-            # Excel не умеет хранить часовой пояс — приводим к местному времени
-            # и убираем сведения о зоне.
-            finished.astimezone().replace(tzinfo=None) if finished else None,
-        ]
-        row_values += [
-            marks.get((attempt["id"], question["id"]), "") for question in question_rows
-        ]
-        sheet.append(row_values)
+        sheet.append(
+            [
+                attempt["student_class"],
+                attempt["student_name"],
+                attempt["variant_no"],
+                attempt["score"] or 0,
+                attempt["max_score"] or 0,
+                percent_of(attempt["score"], attempt["max_score"]),
+                # Excel не хранит часовой пояс — приводим к местному времени.
+                finished.astimezone().replace(tzinfo=None) if finished else None,
+            ]
+        )
 
-    # Шапка жирная и закреплена: при прокрутке длинного списка её видно.
     for cell in sheet[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
     sheet.freeze_panes = "A2"
-
-    # Формат даты в столбце «Время сдачи» (шестой по счёту).
-    for row in sheet.iter_rows(min_row=2, min_col=6, max_col=6):
+    for row in sheet.iter_rows(min_row=2, min_col=7, max_col=7):
         for cell in row:
             cell.number_format = "DD.MM.YYYY HH:MM"
+    for letter, width in zip("ABCDEFG", (10, 28, 9, 8, 11, 7, 18)):
+        sheet.column_dimensions[letter].width = width
 
-    # Ширина столбцов по содержимому: берём самую длинную строку в столбце.
-    for column_index, column_cells in enumerate(sheet.columns, start=1):
-        longest = 0
-        for cell in column_cells:
-            if cell.value is None:
-                continue
-            if isinstance(cell.value, datetime):
-                length = 16  # "31.12.2026 23:59"
-            else:
-                length = len(str(cell.value))
-            longest = max(longest, length)
-        # +2 символа на воздух, но не шире 60 — иначе длинный вопрос растянет таблицу.
-        sheet.column_dimensions[
-            sheet.cell(row=1, column=column_index).column_letter
-        ].width = min(longest + 2, 60)
+    # ---------- Лист 2: умения ----------
+    skills_sheet = workbook.create_sheet("Умения")
+    skills_sheet.append(
+        ["Класс", "ФИО"] + [f"{skill['position']}. {skill['title']}" for skill in skills]
+    )
 
-    # --- Второй лист: сводка по вопросам ---------------------------------
-    # Учителю удобнее видеть её сразу в файле, а не только на экране.
-    with pool.connection() as conn:
-        stat_rows = load_question_stats(conn, test_row["id"])
+    for attempt in attempts:
+        row_values = [attempt["student_class"], attempt["student_name"]]
+        for skill in skills:
+            cell = matrix.get((attempt["id"], skill["id"]))
+            row_values.append(percent_of(cell["correct"], cell["total"]) if cell else None)
+        skills_sheet.append(row_values)
 
-    stats_sheet = workbook.create_sheet("По вопросам")
-    stats_sheet.append(["№", "Вопрос", "Верно", "Неверно", "Пропущено"])
-    for stat in stat_rows:
-        stats_sheet.append(
+    # Последняя строка — итог по всем работам (то же, что «строка по классу» на экране).
+    skills_sheet.append(
+        ["", "Итого по классу"] + [stat["percent"] for stat in skill_stats]
+    )
+
+    for cell in skills_sheet[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for cell in skills_sheet[skills_sheet.max_row]:
+        cell.font = Font(bold=True)
+    skills_sheet.freeze_panes = "C2"
+
+    # Цвет по тем же порогам, что и на экране: <50 красный, 50–65 жёлтый, >65 зелёный.
+    for row in skills_sheet.iter_rows(min_row=2, min_col=3):
+        for cell in row:
+            if isinstance(cell.value, int):
+                cell.fill = fill_for(cell.value)
+                cell.number_format = '0"%"'
+                cell.alignment = Alignment(horizontal="center")
+
+    skills_sheet.column_dimensions["A"].width = 10
+    skills_sheet.column_dimensions["B"].width = 28
+    for index in range(len(skills)):
+        letter = skills_sheet.cell(row=1, column=3 + index).column_letter
+        skills_sheet.column_dimensions[letter].width = 16
+
+    # ---------- Лист 3: задания ----------
+    tasks_sheet = workbook.create_sheet("Задания")
+    tasks_sheet.append(
+        [
+            "Вариант",
+            "№",
+            "Умение",
+            "Задание",
+            "Формат",
+            "Правильный ответ",
+            "Решение",
+            "Верно",
+            "Ответов",
+            "%",
+        ]
+    )
+
+    for task in task_rows:
+        if task["answer_format"] == "choice":
+            correct_answer = task["right_option_text"] or ""
+            format_name = "выбор"
+        else:
+            correct_answer = " / ".join(task["accepted_answers"])
+            format_name = "ввод"
+
+        tasks_sheet.append(
             [
-                stat["position"],
-                stat["text"],
-                stat["correct_count"],
-                stat["wrong_count"],
-                stat["skipped_count"],
+                task["variant_no"],
+                task["position"],
+                task["skill_title"],
+                task["text"],
+                format_name,
+                correct_answer,
+                task["solution"],
+                task["correct"],
+                task["answered"],
+                percent_of(task["correct"], task["answered"]),
             ]
         )
-    for cell in stats_sheet[1]:
-        cell.font = Font(bold=True)
-    stats_sheet.column_dimensions["A"].width = 5
-    stats_sheet.column_dimensions["B"].width = 60
-    for letter in ("C", "D", "E"):
-        stats_sheet.column_dimensions[letter].width = 12
 
-    # Пишем книгу в память, а не в файл на диске.
+    for cell in tasks_sheet[1]:
+        cell.font = Font(bold=True)
+    tasks_sheet.freeze_panes = "A2"
+    for letter, width in zip("ABCDEFGHIJ", (9, 5, 24, 52, 9, 22, 40, 8, 9, 7)):
+        tasks_sheet.column_dimensions[letter].width = width
+    for row in tasks_sheet.iter_rows(min_row=2, min_col=4, max_col=4):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
     buffer = io.BytesIO()
     workbook.save(buffer)
     buffer.seek(0)
 
-    # Имя файла — только латиница и цифры: кириллица в заголовке Content-Disposition
+    # Имя файла только из латиницы и цифр: кириллица в Content-Disposition
     # ломается в части браузеров.
     filename = f"results-{test_row['share_token']}.xlsx"
 
     return Response(
         content=buffer.getvalue(),
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -450,12 +567,7 @@ def update_settings(
     payload: TestSettingsUpdate,
     results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
 ) -> ResultsOverviewSettings:
-    """
-    Переключает приём работ.
-
-    Закрытый приём не удаляет ничего: ученики просто видят сообщение
-    «приём работ закрыт», а уже сданные работы остаются на месте.
-    """
+    """Закрытый приём ничего не удаляет: сданные работы остаются на месте."""
     try:
         pool = db.get_pool()
     except Exception as exc:  # noqa: BLE001
@@ -463,7 +575,6 @@ def update_settings(
 
     with pool.connection() as conn:
         test_row = load_test_by_results_token(conn, results_token)
-
         conn.execute(
             "UPDATE tests SET is_open = %s WHERE id = %s",
             (payload.is_open, test_row["id"]),
@@ -487,11 +598,8 @@ def delete_attempt(
     attempt_id: int = Path(ge=1),
 ) -> Response:
     """
-    Удаляет одну работу.
-
-    Это и есть способ разрешить пересдачу: уникальный индекс из миграции 004
-    больше не сработает, и ученик сможет сдать заново. Ответы удалятся сами —
-    у answers.attempt_id стоит ON DELETE CASCADE.
+    Удаляет одну работу — так учитель разрешает пересдачу: запись о попытке
+    исчезает, и ученик снова может начать. Ответы уходят каскадом.
     """
     try:
         pool = db.get_pool()
@@ -501,8 +609,6 @@ def delete_attempt(
     with pool.connection() as conn:
         test_row = load_test_by_results_token(conn, results_token)
 
-        # test_id в условии обязателен: иначе по одному токену можно было бы
-        # удалять работы из чужих контрольных, подставляя произвольный id.
         deleted = conn.execute(
             "DELETE FROM attempts WHERE id = %s AND test_id = %s RETURNING id",
             (attempt_id, test_row["id"]),
@@ -530,13 +636,9 @@ def delete_test(
     ),
 ) -> Response:
     """
-    Удаляет контрольную со всеми вопросами и работами. Действие необратимо.
+    Удаляет контрольную со всеми умениями, заданиями и работами. Необратимо.
 
-    Защита от случайного нажатия двойная: подтверждение в браузере И название,
-    которое сервер сверяет сам. Без совпадения названия удаления не будет,
-    даже если запрос отправлен мимо страницы.
-
-    Вопросы, варианты, работы и ответы удаляются каскадом (см. миграции 001 и 004).
+    Защита двойная: подтверждение в браузере И название, которое сверяет сервер.
     """
     try:
         pool = db.get_pool()
@@ -546,7 +648,7 @@ def delete_test(
     with pool.connection() as conn:
         test_row = load_test_by_results_token(conn, results_token)
 
-        # Сравниваем без учёта пробелов по краям: учитель мог скопировать название.
+        # Сравниваем без пробелов по краям: учитель мог скопировать название.
         if confirm_title.strip() != test_row["title"].strip():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

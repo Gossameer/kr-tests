@@ -1,125 +1,208 @@
-/** Типы данных, общие для всех файлов фронтенда. */
+/**
+ * Типы данных, общие для всех файлов фронтенда.
+ *
+ * Модель: контрольная → умения (что проверяем) + варианты (1..N).
+ * Задание принадлежит варианту и умению, отвечать на него можно
+ * вводом текста ('input') или выбором варианта ('choice').
+ */
 
-/** Один вопрос в том виде, в каком его присылает ИИ и принимает бэкенд. */
-export type DraftQuestion = {
-  text: string
-  options: string[]
-  /** Индекс правильного варианта, считая с нуля. */
-  correct: number
+/** Как ученик отвечает на задание. */
+export type AnswerFormat = 'input' | 'choice'
+
+/** Русские названия форматов — для подписей на экране. */
+export const FORMAT_NAMES: Record<AnswerFormat, string> = {
+  input: 'ввод ответа',
+  choice: 'выбор из вариантов',
 }
 
-/** Контрольная, готовая к отправке на бэкенд. */
-export type TestDraft = {
+/* ===================== Создание контрольной ===================== */
+
+/** Умение: что проверяет группа заданий. */
+export type SkillDraft = {
   title: string
-  /** ФИО учителя — обязательное поле формы. */
-  teacher_name: string
-  /** Классы, из которых ученик выберет свой. */
-  classes: string[]
-  /** Перемешивать ли вопросы и варианты у каждого ученика. */
-  shuffle: boolean
-  questions: DraftQuestion[]
+  /** Сколько заданий на это умение в каждом варианте. */
+  tasksPerVariant: number
+  answerFormat: AnswerFormat
 }
 
-/** Ответ бэкенда на POST /api/tests */
+/** Одно задание конкретного варианта. */
+export type TaskDraft = {
+  /** Номер умения в списке, считая с единицы. */
+  skillIndex: number
+  text: string
+  answerFormat: AnswerFormat
+  /** Для 'choice': варианты ответа и номер верного (с нуля). */
+  options: string[]
+  correct: number | null
+  /** Для 'input': все ответы, которые засчитываются. */
+  acceptedAnswers: string[]
+  /** Краткое решение — видит только учитель. */
+  solution: string
+}
+
+/** Один вариант контрольной. */
+export type VariantDraft = {
+  variantNo: number
+  tasks: TaskDraft[]
+}
+
+/** Тело POST /api/tests */
+export type TestCreatePayload = {
+  title: string
+  teacher_name: string
+  classes: string[]
+  variants_count: number
+  shuffle: boolean
+  skills: {
+    title: string
+    tasks_per_variant: number
+    answer_format: AnswerFormat
+  }[]
+  variants: {
+    variant_no: number
+    tasks: {
+      skill_index: number
+      text: string
+      answer_format: AnswerFormat
+      options: string[]
+      correct: number | null
+      accepted_answers: string[]
+      solution: string
+    }[]
+  }[]
+}
+
+/** Ответ POST /api/tests */
 export type CreatedTest = {
   id: number
   code: string
-  /** Длинный секрет для ссылки на результаты — показывать только учителю. */
   results_token: string
   title: string
-  questions_count: number
+  variants_count: number
+  skills_count: number
+  tasks_count: number
 }
 
-/* ===================== Публичная часть: экран ученика ===================== */
+/* ===================== Экран ученика ===================== */
 
-/** Вариант ответа так, как его видит ученик: без признака правильности. */
+/** Ответ GET /api/public/tests/{code} — шапка до нажатия «Начать». */
+export type PublicTestInfo = {
+  code: string
+  title: string
+  teacher_name: string
+  classes: string[]
+  is_open: boolean
+  tasks_count: number
+}
+
 export type PublicOption = {
   id: number
   text: string
 }
 
-export type PublicQuestion = {
+/** Задание для ученика: без правильного ответа и без решения. */
+export type PublicTask = {
   id: number
-  text: string
   position: number
+  text: string
+  answer_format: AnswerFormat
   options: PublicOption[]
 }
 
-/** Ответ GET /api/public/tests/{code} */
-export type PublicTest = {
-  code: string
-  title: string
-  teacher_name: string
-  /** Классы контрольной — ученик выбирает свой из этого списка. */
-  classes: string[]
-  /** Нужно ли перемешать порядок вопросов и вариантов на этом устройстве. */
-  shuffle: boolean
-  /** Открыт ли приём работ. Если закрыто, questions приходит пустым. */
-  is_open: boolean
-  questions: PublicQuestion[]
-}
-
-/** Тело POST /api/public/tests/{code}/attempts */
-export type AttemptPayload = {
+/** Ответ POST /api/public/tests/{code}/start */
+export type StartedAttempt = {
+  attempt_id: number
+  attempt_token: string
+  variant_no: number
   student_name: string
   student_class: string
-  /** {id вопроса: id выбранного варианта}. Пропущенных вопросов здесь просто нет. */
-  answers: Record<number, number>
+  title: string
+  shuffle: boolean
+  tasks: PublicTask[]
 }
 
-/** Итог по одному вопросу. Какой вариант верный — бэкенд не сообщает. */
-export type QuestionResult = {
-  question_id: number
+/** Тело сдачи работы. */
+export type SubmitPayload = {
+  attempt_token: string
+  /** {id задания: id выбранного варианта} */
+  choices: Record<number, number>
+  /** {id задания: введённый текст} */
+  inputs: Record<number, string>
+}
+
+/** Итог по одному заданию. Правильный ответ не раскрывается. */
+export type TaskResult = {
+  task_id: number
   position: number
   answered: boolean
   is_correct: boolean
 }
 
-/** Ответ POST /api/public/tests/{code}/attempts */
+/** Ответ на сдачу работы. */
 export type AttemptResult = {
   attempt_id: number
+  variant_no: number
   student_name: string
   student_class: string
   score: number
   max_score: number
-  results: QuestionResult[]
+  results: TaskResult[]
 }
 
 /**
- * То, что кладём в localStorage после сдачи.
- *
- * Тексты вопросов сохраняем вместе с результатом, чтобы экран результата
- * открывался даже без связи с сервером.
+ * Что кладём в localStorage после сдачи: результат и тексты заданий,
+ * чтобы экран результата открывался и без связи с сервером.
  */
 export type StoredAttempt = {
   savedAt: string
   code: string
   title: string
   result: AttemptResult
-  questions: { id: number; text: string; position: number }[]
+  tasks: { id: number; text: string; position: number }[]
+}
+
+/** Начатая, но не сданная работа — чтобы продолжить после перезагрузки. */
+export type StoredProgress = {
+  code: string
+  attemptId: number
+  attemptToken: string
+  variantNo: number
+  studentName: string
+  studentClass: string
 }
 
 /* ===================== Результаты для учителя ===================== */
 
-/** Строка таблицы сдавших. */
+export type SkillInfo = {
+  id: number
+  position: number
+  title: string
+  tasks_per_variant: number
+  answer_format: AnswerFormat
+}
+
+/** Строка таблицы учеников. */
 export type AttemptRow = {
   attempt_id: number
   student_name: string
   student_class: string
+  variant_no: number
   score: number
   max_score: number
   percent: number
   finished_at: string | null
+  /** {id умения: процент выполнения} — основа матрицы «ученик × умение». */
+  skill_percents: Record<number, number>
 }
 
-/** Сводка по одному вопросу. */
-export type QuestionStat = {
-  question_id: number
+/** Сводка по умению для всего класса. */
+export type SkillStat = {
+  skill_id: number
   position: number
-  text: string
-  correct_count: number
-  wrong_count: number
-  skipped_count: number
+  title: string
+  correct: number
+  total: number
+  percent: number
 }
 
 /** Ответ GET /api/results/{token} */
@@ -127,24 +210,25 @@ export type ResultsOverview = {
   title: string
   teacher_name: string
   code: string
-  /** Классы, для которых создана контрольная. */
   classes: string[]
-  shuffle: boolean
-  /** Открыт ли приём работ — этим управляет переключатель на странице. */
+  variants_count: number
   is_open: boolean
-  questions_count: number
+  skills: SkillInfo[]
   attempts_count: number
   attempts: AttemptRow[]
-  question_stats: QuestionStat[]
+  skill_stats: SkillStat[]
 }
 
-/** Один вопрос в разборе работы. Здесь правильный вариант виден — это экран учителя. */
+/** Одно задание в разборе работы — здесь правильный ответ виден. */
 export type AttemptDetailItem = {
-  question_id: number
+  task_id: number
   position: number
-  question_text: string
-  chosen_option_text: string | null
-  correct_option_text: string | null
+  skill_title: string
+  text: string
+  answer_format: AnswerFormat
+  student_answer: string | null
+  correct_answer: string
+  solution: string
   answered: boolean
   is_correct: boolean
 }
@@ -154,6 +238,7 @@ export type AttemptDetail = {
   attempt_id: number
   student_name: string
   student_class: string
+  variant_no: number
   score: number
   max_score: number
   percent: number

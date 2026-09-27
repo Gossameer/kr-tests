@@ -1,33 +1,26 @@
 /**
- * Разбор и проверка вопросов контрольной.
+ * Разбор и проверка того, что вернул ИИ.
  *
- * Здесь три задачи:
- *   1. вытащить JSON из ответа ИИ, даже если вокруг него текст или ```json;
- *   2. превратить его в наши объекты;
- *   3. проверить правила (те же, что на бэкенде) и выдать понятные ошибки.
+ * Три задачи:
+ *   1. вытащить JSON, даже если вокруг него текст или ```json;
+ *   2. превратить его в наши варианты и задания;
+ *   3. проверить полноту: в каждом варианте все умения, нужное число заданий,
+ *      совпадающий формат ответа.
  *
- * Бэкенд проверяет всё заново: фронтенду доверять нельзя, его легко обойти.
- * Проверка здесь нужна только чтобы учитель увидел ошибку сразу.
+ * Бэкенд проверяет всё заново — фронтенду доверять нельзя. Здесь проверка
+ * нужна, чтобы учитель увидел ошибку сразу и понял, что именно не так.
  */
 
-import type { DraftQuestion } from '../types'
+import type { AnswerFormat, SkillDraft, TaskDraft, VariantDraft } from '../types'
+import { FORMAT_NAMES } from '../types'
 
-export const MAX_QUESTIONS = 100
-export const MAX_OPTIONS = 10
-
-/** Результат разбора вставленного текста. */
 export type ParseResult =
-  | { ok: true; title: string | null; questions: DraftQuestion[] }
+  | { ok: true; variants: VariantDraft[] }
   | { ok: false; errors: string[] }
 
-/** Проверяет, что значение — непустая строка, и возвращает её без пробелов по краям. */
-function cleanString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null
-  }
-  const cleaned = value.trim()
-  return cleaned.length > 0 ? cleaned : null
-}
+export type ParseTaskResult =
+  | { ok: true; task: TaskDraft }
+  | { ok: false; errors: string[] }
 
 /**
  * Достаёт JSON из ответа ИИ.
@@ -35,24 +28,20 @@ function cleanString(value: unknown): string | null {
  * ИИ часто отвечает так:
  *     Вот ваша контрольная:
  *     ```json
- *     { "title": ... }
+ *     { "variants": [...] }
  *     ```
- *     Готово!
- *
- * Поэтому сначала пробуем содержимое ```-блока, а если его нет — берём всё
- * от первой «{» до последней «}». Если и этого нет, возвращаем исходный текст:
- * пусть JSON.parse сам сообщит об ошибке.
+ * Поэтому сначала пробуем содержимое ```-блока, потом — от первой «{»
+ * до последней «}». Если не нашли, отдаём текст как есть: пусть JSON.parse
+ * сам сообщит об ошибке.
  */
 export function extractJsonBlock(raw: string): string {
   const text = raw.trim()
 
-  // Блок в тройных кавычках, с «json» или без.
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)
   if (fenced?.[1] !== undefined && fenced[1].trim() !== '') {
     return fenced[1].trim()
   }
 
-  // Иначе — самый внешний объект { ... }.
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start !== -1 && end > start) {
@@ -62,59 +51,84 @@ export function extractJsonBlock(raw: string): string {
   return text
 }
 
-/**
- * Проверяет список вопросов по правилам контрольной.
- * Возвращает все найденные ошибки — учителю удобнее исправить их сразу.
- */
-export function validateQuestions(questions: DraftQuestion[]): string[] {
-  const errors: string[] = []
-
-  if (questions.length === 0) {
-    errors.push('Добавьте хотя бы один вопрос.')
-    return errors
-  }
-  if (questions.length > MAX_QUESTIONS) {
-    errors.push(`Слишком много вопросов (${questions.length}), максимум ${MAX_QUESTIONS}.`)
-  }
-
-  questions.forEach((question, index) => {
-    // Нумерация для человека — с единицы.
-    const where = `Вопрос ${index + 1}`
-
-    if (question.text.trim() === '') {
-      errors.push(`${where}: не заполнен текст вопроса.`)
-    }
-
-    const options = question.options.map((option) => option.trim())
-
-    if (options.length < 2) {
-      errors.push(`${where}: нужно минимум 2 варианта ответа, а есть ${options.length}.`)
-    }
-    if (options.length > MAX_OPTIONS) {
-      errors.push(`${where}: слишком много вариантов (${options.length}), максимум ${MAX_OPTIONS}.`)
-    }
-    if (options.some((option) => option === '')) {
-      errors.push(`${where}: есть пустые варианты ответа.`)
-    }
-    if (new Set(options).size !== options.length) {
-      errors.push(`${where}: варианты ответа повторяются.`)
-    }
-    if (!Number.isInteger(question.correct) || question.correct < 0) {
-      errors.push(`${where}: не отмечен правильный вариант.`)
-    } else if (question.correct >= options.length) {
-      // Бывает и при загрузке из ИИ (correct больше числа вариантов),
-      // и при наборе руками (правильный вариант удалили) — текст годится для обоих.
-      errors.push(
-        `${where}: правильным отмечен вариант №${question.correct + 1}, ` +
-          `а вариантов всего ${options.length}.`,
-      )
-    }
-  })
-
-  return errors
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
-/** Разбирает текст (обычно — ответ ИИ) в список вопросов. */
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.map((item) => asString(item)).filter((item) => item !== '')
+}
+
+/** Пустое задание — заготовка для ручного заполнения. */
+export function emptyTask(skillIndex: number, format: AnswerFormat): TaskDraft {
+  return {
+    skillIndex,
+    text: '',
+    answerFormat: format,
+    options: format === 'choice' ? ['', '', '', ''] : [],
+    correct: format === 'choice' ? 0 : null,
+    acceptedAnswers: format === 'choice' ? [] : [''],
+    solution: '',
+  }
+}
+
+/** Разбирает одно задание из объекта ИИ. */
+function readTask(source: Record<string, unknown>, skillIndex: number): TaskDraft {
+  const format: AnswerFormat = asString(source.format) === 'choice' ? 'choice' : 'input'
+  const correctRaw = source.correct
+
+  return {
+    skillIndex,
+    text: asString(source.text),
+    answerFormat: format,
+    options: format === 'choice' ? asStringList(source.options) : [],
+    correct:
+      format === 'choice' && typeof correctRaw === 'number' && Number.isInteger(correctRaw)
+        ? correctRaw
+        : format === 'choice'
+          ? null
+          : null,
+    acceptedAnswers: format === 'input' ? asStringList(source.answers) : [],
+    solution: asString(source.solution),
+  }
+}
+
+/** Разбирает ответ ИИ на промт замены одного задания. */
+export function parseSingleTask(raw: string, skillIndex: number): ParseTaskResult {
+  if (!raw.trim()) {
+    return { ok: false, errors: ['Поле пустое — вставьте ответ ИИ.'] }
+  }
+
+  let data: unknown
+  try {
+    data = JSON.parse(extractJsonBlock(raw))
+  } catch (error: unknown) {
+    const details = error instanceof Error ? error.message : String(error)
+    return {
+      ok: false,
+      errors: [
+        'Не удалось прочитать JSON — проверьте запятые, кавычки и скобки.',
+        `Подробности от браузера: ${details}`,
+      ],
+    }
+  }
+
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return { ok: false, errors: ['Ожидается объект одного задания.'] }
+  }
+
+  const task = readTask(data as Record<string, unknown>, skillIndex)
+  if (task.text === '') {
+    return { ok: false, errors: ['В ответе ИИ нет текста задания (поле "text").'] }
+  }
+
+  return { ok: true, task }
+}
+
+/** Разбирает ответ ИИ на промт всей контрольной. */
 export function parseTestJson(raw: string): ParseResult {
   if (!raw.trim()) {
     return { ok: false, errors: ['Поле пустое — вставьте ответ ИИ.'] }
@@ -137,59 +151,161 @@ export function parseTestJson(raw: string): ParseResult {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
     return {
       ok: false,
-      errors: ['Ожидается объект вида { "title": "...", "questions": [...] }.'],
+      errors: ['Ожидается объект вида { "variants": [ ... ] }.'],
     }
   }
 
   const source = data as Record<string, unknown>
-  const errors: string[] = []
-
-  // Название необязательно: учитель мог уже заполнить его в форме.
-  const title = cleanString(source.title)
-
-  const rawQuestions = source.questions
-  if (!Array.isArray(rawQuestions)) {
-    errors.push('В JSON нет списка «questions».')
-    return { ok: false, errors }
+  if (!Array.isArray(source.variants)) {
+    return { ok: false, errors: ['В JSON нет списка «variants».'] }
   }
 
-  // Сначала приводим к нашим типам, потом проверяем общими правилами.
-  const questions: DraftQuestion[] = []
+  const errors: string[] = []
+  const variants: VariantDraft[] = []
 
-  rawQuestions.forEach((rawQuestion: unknown, index: number) => {
-    const where = `Вопрос ${index + 1}`
-
-    if (rawQuestion === null || typeof rawQuestion !== 'object' || Array.isArray(rawQuestion)) {
-      errors.push(`${where}: должен быть объектом с полями text, options, correct.`)
+  source.variants.forEach((rawVariant: unknown, index: number) => {
+    if (rawVariant === null || typeof rawVariant !== 'object' || Array.isArray(rawVariant)) {
+      errors.push(`Вариант ${index + 1}: должен быть объектом с полями variant и tasks.`)
       return
     }
 
-    const question = rawQuestion as Record<string, unknown>
-    const text = typeof question.text === 'string' ? question.text.trim() : ''
+    const variant = rawVariant as Record<string, unknown>
+    const variantNo =
+      typeof variant.variant === 'number' && Number.isInteger(variant.variant)
+        ? variant.variant
+        : index + 1
 
-    if (!Array.isArray(question.options)) {
-      errors.push(`${where}: поле «options» отсутствует или не является списком.`)
+    if (!Array.isArray(variant.tasks)) {
+      errors.push(`Вариант ${variantNo}: нет списка заданий «tasks».`)
       return
     }
 
-    const options = question.options.map((option: unknown) =>
-      typeof option === 'string' ? option.trim() : '',
-    )
+    const tasks: TaskDraft[] = []
+    variant.tasks.forEach((rawTask: unknown, taskIndex: number) => {
+      if (rawTask === null || typeof rawTask !== 'object' || Array.isArray(rawTask)) {
+        errors.push(`Вариант ${variantNo}, задание ${taskIndex + 1}: должно быть объектом.`)
+        return
+      }
 
-    const correct = question.correct
-    if (typeof correct !== 'number' || !Number.isInteger(correct)) {
-      errors.push(`${where}: поле «correct» должно быть целым числом (номер с нуля).`)
-      return
-    }
+      const task = rawTask as Record<string, unknown>
+      const skillRaw = task.skill
+      if (typeof skillRaw !== 'number' || !Number.isInteger(skillRaw) || skillRaw < 1) {
+        errors.push(
+          `Вариант ${variantNo}, задание ${taskIndex + 1}: ` +
+            'не указан номер умения (поле "skill").',
+        )
+        return
+      }
 
-    questions.push({ text, options, correct })
+      tasks.push(readTask(task, skillRaw))
+    })
+
+    variants.push({ variantNo, tasks })
   })
-
-  errors.push(...validateQuestions(questions))
 
   if (errors.length > 0) {
     return { ok: false, errors }
   }
 
-  return { ok: true, title, questions }
+  return { ok: true, variants }
+}
+
+/**
+ * Проверка полноты — те же правила, что и на бэкенде.
+ * Возвращает все найденные ошибки: учителю удобнее исправить их разом.
+ */
+export function validateTest(
+  skills: SkillDraft[],
+  variantsCount: number,
+  variants: VariantDraft[],
+): string[] {
+  const errors: string[] = []
+
+  if (skills.length === 0) {
+    errors.push('Добавьте хотя бы одно умение.')
+    return errors
+  }
+
+  skills.forEach((skill, index) => {
+    if (skill.title.trim() === '') {
+      errors.push(`Умение ${index + 1}: не заполнено название.`)
+    }
+  })
+
+  const numbers = variants.map((variant) => variant.variantNo).sort((a, b) => a - b)
+  const expected = Array.from({ length: variantsCount }, (_, index) => index + 1)
+  if (numbers.join(',') !== expected.join(',')) {
+    errors.push(
+      `Вариантов должно быть ${variantsCount} с номерами ${expected.join(', ')}, ` +
+        `а сейчас: ${numbers.join(', ') || 'ни одного'}.`,
+    )
+  }
+
+  variants.forEach((variant) => {
+    const whereVariant = `Вариант ${variant.variantNo}`
+
+    variant.tasks.forEach((task) => {
+      if (task.skillIndex < 1 || task.skillIndex > skills.length) {
+        errors.push(
+          `${whereVariant}: задание ссылается на умение №${task.skillIndex}, ` +
+            `а умений всего ${skills.length}.`,
+        )
+      }
+    })
+
+    skills.forEach((skill, skillIndex) => {
+      const number = skillIndex + 1
+      const own = variant.tasks.filter((task) => task.skillIndex === number)
+      const where = `${whereVariant}, умение ${number} «${skill.title}»`
+
+      if (own.length !== skill.tasksPerVariant) {
+        errors.push(`${where}: заданий ${own.length}, а нужно ${skill.tasksPerVariant}.`)
+      }
+
+      own.forEach((task, order) => {
+        const place = `${where}, задание ${order + 1}`
+
+        if (task.text.trim() === '') {
+          errors.push(`${place}: пустой текст задания.`)
+        }
+
+        if (task.answerFormat !== skill.answerFormat) {
+          errors.push(
+            `${place}: формат «${FORMAT_NAMES[task.answerFormat]}», ` +
+              `а у умения — «${FORMAT_NAMES[skill.answerFormat]}».`,
+          )
+          return
+        }
+
+        if (task.answerFormat === 'choice') {
+          const options = task.options.map((option) => option.trim())
+          if (options.filter((option) => option !== '').length < 2) {
+            errors.push(`${place}: нужно минимум 2 непустых варианта ответа.`)
+          }
+          if (options.some((option) => option === '')) {
+            errors.push(`${place}: есть пустые варианты ответа.`)
+          }
+          if (new Set(options).size !== options.length) {
+            errors.push(`${place}: варианты ответа повторяются.`)
+          }
+          if (
+            task.correct === null ||
+            task.correct < 0 ||
+            task.correct >= task.options.length
+          ) {
+            errors.push(`${place}: не отмечен правильный вариант.`)
+          }
+        } else {
+          const answers = task.acceptedAnswers
+            .map((answer) => answer.trim())
+            .filter((answer) => answer !== '')
+          if (answers.length === 0) {
+            errors.push(`${place}: не указан правильный ответ.`)
+          }
+        }
+      })
+    })
+  })
+
+  return errors
 }
