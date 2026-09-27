@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.names import normalize_class_name, normalize_full_name
+from app.security import normalize_email, password_problem
 
 # Ограничения, чтобы в базу не попало что-то огромное.
 MAX_TITLE_LEN = 300
@@ -119,7 +120,8 @@ class TestCreate(BaseModel):
     """Вся контрольная: шапка, умения и варианты с заданиями."""
 
     title: str
-    teacher_name: str
+    # Предмет нужен для статистики по школе: «алгебра», «геометрия», «физика».
+    subject: str
     classes: list[str]
     variants_count: int = 1
     # Перемешивать ли порядок заданий внутри варианта у каждого ученика.
@@ -127,7 +129,7 @@ class TestCreate(BaseModel):
     skills: list[SkillIn]
     variants: list[VariantIn]
 
-    @field_validator("title", "teacher_name")
+    @field_validator("title", "subject")
     @classmethod
     def not_blank(cls, value: str) -> str:
         cleaned = " ".join(value.split())
@@ -279,9 +281,6 @@ class TestCreated(BaseModel):
 
     id: int
     code: str = Field(description="Короткий код для ссылки ученикам")
-    results_token: str = Field(
-        description="Длинный секрет для ссылки на результаты — только для учителя"
-    )
     title: str
     variants_count: int
     skills_count: int
@@ -405,7 +404,7 @@ class AttemptResultOut(BaseModel):
 
 
 # =====================================================================
-# Результаты для учителя (доступ по секретной ссылке /r/<results_token>)
+# Результаты для учителя (доступ: владелец контрольной или администратор)
 # =====================================================================
 
 
@@ -446,9 +445,11 @@ class SkillStat(BaseModel):
 
 
 class ResultsOverview(BaseModel):
-    """Ответ GET /api/results/{results_token}."""
+    """Ответ GET /api/tests/{test_id}/results."""
 
+    id: int
     title: str
+    subject: str
     teacher_name: str
     code: str
     classes: list[str]
@@ -476,7 +477,7 @@ class AttemptDetailItem(BaseModel):
 
 
 class AttemptDetail(BaseModel):
-    """Ответ GET /api/results/{results_token}/attempts/{attempt_id}."""
+    """Ответ GET /api/tests/{test_id}/attempts/{attempt_id}."""
 
     attempt_id: int
     student_name: str
@@ -490,7 +491,7 @@ class AttemptDetail(BaseModel):
 
 
 class TestSettingsUpdate(BaseModel):
-    """Тело PATCH /api/results/{results_token}."""
+    """Тело PATCH /api/tests/{test_id}: открыть или закрыть приём работ."""
 
     is_open: bool
 
@@ -499,3 +500,134 @@ class ResultsOverviewSettings(BaseModel):
     """Ответ на PATCH: подтверждаем новое состояние."""
 
     is_open: bool
+
+
+# =====================================================================
+# Учётные записи
+# =====================================================================
+
+
+class UserOut(BaseModel):
+    """Пользователь в ответах API. Хеша пароля здесь нет и быть не должно."""
+
+    id: int
+    full_name: str
+    email: str
+    role: Literal["teacher", "admin"]
+    is_active: bool
+    created_at: datetime
+    last_login_at: datetime | None = None
+
+
+class RegisterIn(BaseModel):
+    """Тело POST /api/auth/register."""
+
+    full_name: str
+    email: str
+    password: str
+    # Школьный код — единственное, что отделяет учителей от посторонних.
+    school_code: str
+
+    @field_validator("full_name")
+    @classmethod
+    def check_name(cls, value: str) -> str:
+        cleaned = normalize_full_name(value)
+        if not cleaned:
+            raise ValueError("укажите фамилию, имя и отчество")
+        if len(cleaned) > MAX_TITLE_LEN:
+            raise ValueError(f"слишком длинное, максимум {MAX_TITLE_LEN} символов")
+        return cleaned
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, value: str) -> str:
+        cleaned = normalize_email(value)
+        # Полноценную проверку адреса не делаем: письма сервис не шлёт,
+        # email здесь — просто логин. Ловим только явную ерунду.
+        if "@" not in cleaned or "." not in cleaned.split("@")[-1] or len(cleaned) < 6:
+            raise ValueError("похоже, это не адрес электронной почты")
+        if len(cleaned) > 200:
+            raise ValueError("адрес слишком длинный")
+        return cleaned
+
+    @field_validator("password")
+    @classmethod
+    def check_password(cls, value: str) -> str:
+        problem = password_problem(value)
+        if problem is not None:
+            raise ValueError(problem)
+        return value
+
+
+class LoginIn(BaseModel):
+    """Тело POST /api/auth/login."""
+
+    email: str
+    password: str
+
+
+class PasswordResetOut(BaseModel):
+    """Ответ на сброс пароля: временный пароль показывается ОДИН раз."""
+
+    user_id: int
+    email: str
+    temporary_password: str
+
+
+class TeacherRow(BaseModel):
+    """Строка списка учителей в админке."""
+
+    id: int
+    full_name: str
+    email: str
+    role: Literal["teacher", "admin"]
+    is_active: bool
+    created_at: datetime
+    last_login_at: datetime | None
+    tests_count: int
+    attempts_count: int
+
+
+class TeacherUpdate(BaseModel):
+    """Тело PATCH /api/admin/teachers/{id}: блокировка и разблокировка."""
+
+    is_active: bool
+
+
+class SettingsOut(BaseModel):
+    """Настройки школы."""
+
+    school_code: str
+
+
+class SettingsUpdate(BaseModel):
+    """Смена школьного кода."""
+
+    school_code: str
+
+    @field_validator("school_code")
+    @classmethod
+    def check_code(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if len(cleaned) < 4:
+            raise ValueError("код должен быть не короче 4 символов")
+        if len(cleaned) > 100:
+            raise ValueError("код слишком длинный")
+        return cleaned
+
+
+class MyTestRow(BaseModel):
+    """Строка списка «Мои контрольные»."""
+
+    id: int
+    code: str
+    title: str
+    subject: str
+    classes: list[str]
+    variants_count: int
+    is_open: bool
+    created_at: datetime
+    attempts_count: int
+    # Кто автор — нужно администратору, который видит чужие контрольные.
+    teacher_name: str
+    teacher_id: int

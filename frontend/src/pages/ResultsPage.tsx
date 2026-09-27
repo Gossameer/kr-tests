@@ -21,7 +21,6 @@ import {
   updateTestSettings,
 } from '../api'
 import CopyLink from '../components/CopyLink'
-import { forgetTest } from '../lib/myTestsStorage'
 import type { AttemptDetail, AttemptRow, ResultsOverview, SkillStat } from '../types'
 
 type Loading =
@@ -74,7 +73,10 @@ function averagePercent(attempts: AttemptRow[], skillId: number): number | undef
 }
 
 export default function ResultsPage() {
-  const { token = '' } = useParams()
+  // Контрольная определяется её номером, а права проверяет сервер:
+  // чужую по прямой ссылке не открыть.
+  const { testId: testIdParam = '' } = useParams()
+  const testId = Number(testIdParam)
   const navigate = useNavigate()
 
   const [loading, setLoading] = useState<Loading>({ kind: 'loading' })
@@ -87,7 +89,7 @@ export default function ResultsPage() {
   const [classFilter, setClassFilter] = useState('')
 
   const load = useCallback(() => {
-    fetchResults(token)
+    fetchResults(testId)
       .then((data) => setLoading({ kind: 'ready', data }))
       .catch((error: unknown) =>
         setLoading({
@@ -95,7 +97,7 @@ export default function ResultsPage() {
           message: error instanceof Error ? error.message : 'Не удалось загрузить результаты',
         }),
       )
-  }, [token])
+  }, [testId])
 
   useEffect(load, [load])
 
@@ -131,7 +133,7 @@ export default function ResultsPage() {
       return
     }
 
-    fetchAttemptDetail(token, attemptId)
+    fetchAttemptDetail(testId, attemptId)
       .then((detail) => setDetails((previous) => ({ ...previous, [attemptId]: detail })))
       .catch((error: unknown) =>
         setDetailError(
@@ -144,7 +146,7 @@ export default function ResultsPage() {
     setBusy(true)
     setActionError('')
     try {
-      await updateTestSettings(token, isOpen)
+      await updateTestSettings(testId, isOpen)
       load()
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : 'Не удалось изменить приём работ')
@@ -165,7 +167,7 @@ export default function ResultsPage() {
     setBusy(true)
     setActionError('')
     try {
-      await deleteAttempt(token, attemptId)
+      await deleteAttempt(testId, attemptId)
       setOpenAttemptId(null)
       setDetails({})
       load()
@@ -176,7 +178,7 @@ export default function ResultsPage() {
     }
   }
 
-  async function handleDeleteTest(code: string) {
+  async function handleDeleteTest() {
     const typed = window.prompt(
       'Удалить контрольную вместе со всеми работами?\n\n' +
         'Это действие необратимо. Для подтверждения введите название контрольной:',
@@ -188,8 +190,7 @@ export default function ResultsPage() {
     setBusy(true)
     setActionError('')
     try {
-      await deleteTest(token, typed)
-      forgetTest(code)
+      await deleteTest(testId, typed)
       navigate('/')
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : 'Не удалось удалить контрольную')
@@ -217,8 +218,7 @@ export default function ResultsPage() {
         </section>
         {!isTechnical && (
           <p className="muted">
-            Ссылка на результаты длинная и отличается от ученической — проверьте, что
-            скопировали её целиком.
+            Открывать результаты может только автор контрольной и администратор школы.
           </p>
         )}
       </main>
@@ -245,13 +245,13 @@ export default function ResultsPage() {
     .sort((a, b) => (a.shownPercent ?? 101) - (b.shownPercent ?? 101))
 
   const studentUrl = `${window.location.origin}/t/${data.code}`
-  const resultsUrl = `${window.location.origin}/r/${token}`
 
   return (
     <main className="page page--wide">
       <h1>{data.title}</h1>
       <p className="lead">
-        {data.teacher_name} · {data.classes.join(', ') || 'классы не указаны'} · вариантов{' '}
+        {data.teacher_name} · {data.subject || 'предмет не указан'} ·{' '}
+        {data.classes.join(', ') || 'классы не указаны'} · вариантов{' '}
         {data.variants_count} · умений {data.skills.length} · сдали {data.attempts_count}
       </p>
 
@@ -269,7 +269,7 @@ export default function ResultsPage() {
             <button type="button" className="btn btn--ghost" onClick={handleRefresh}>
               Обновить
             </button>
-            <a className="btn btn--primary" href={resultsExportUrl(token)}>
+            <a className="btn btn--primary" href={resultsExportUrl(testId)}>
               Скачать Excel
             </a>
           </div>
@@ -564,15 +564,13 @@ export default function ResultsPage() {
         )}
       </section>
 
-      {/* ------------------------- Ссылки ------------------------- */}
+      {/* ------------------------- Ссылка ученикам ------------------------- */}
       <section className="card">
-        <h2>Ссылки</h2>
-        <CopyLink label="Для учеников" url={studentUrl} hint="Эту ссылку отправьте классу." />
+        <h2>Ссылка для учеников</h2>
         <CopyLink
-          secret
-          label="Эта страница результатов — только для вас"
-          url={resultsUrl}
-          hint="Сохраните страницу в закладки: без ссылки результаты не открыть, а восстановить её негде."
+          label="Отправьте её классу"
+          url={studentUrl}
+          hint="Вариант выдаётся каждому ученику автоматически. Вход ученикам не нужен."
         />
       </section>
 
@@ -587,7 +585,7 @@ export default function ResultsPage() {
           <button
             type="button"
             className="btn btn--danger"
-            onClick={() => handleDeleteTest(data.code)}
+            onClick={handleDeleteTest}
             disabled={busy}
           >
             Удалить контрольную

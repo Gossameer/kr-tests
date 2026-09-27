@@ -1,21 +1,22 @@
 """
-Создание контрольной учителем.
+Создание контрольной и список своих контрольных.
 
-    POST /api/tests — принимает умения и варианты с заданиями, публикует
-                      контрольную и возвращает две ссылки: ученикам и на результаты.
+    POST /api/tests   — опубликовать контрольную (нужен вход)
+    GET  /api/my/tests — список контрольных текущего учителя
 
-Эндпоинтов, отдающих правильные ответы по ученическому коду, здесь нет:
-всё, что видит учитель, живёт на его секретной ссылке (app/routers/results.py).
+Владелец контрольной — вошедший пользователь. ФИО учителя берётся из учётной
+записи, а не из формы: так в результатах не появится «Учитель» или опечатка.
 """
 
 import logging
 import secrets
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg import errors as pg_errors
 
 from app import db
-from app.schemas import TestCreate, TestCreated
+from app.auth import require_user
+from app.schemas import MyTestRow, TestCreate, TestCreated
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +34,6 @@ def generate_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
 
-def generate_results_token() -> str:
-    """
-    Длинный секрет для ссылки на результаты.
-
-    token_urlsafe(32) — 32 случайных байта (256 бит) в виде строки для адреса.
-    Перебрать такую ссылку нельзя, поэтому она и работает вместо пароля,
-    пока авторизации учителя нет.
-    """
-    return secrets.token_urlsafe(32)
-
-
 def db_unavailable() -> HTTPException:
     """Одинаковый понятный ответ, когда база не отвечает."""
     return HTTPException(
@@ -58,7 +48,7 @@ def db_unavailable() -> HTTPException:
     status_code=status.HTTP_201_CREATED,
     summary="Создать и опубликовать контрольную",
 )
-def create_test(payload: TestCreate) -> TestCreated:
+def create_test(payload: TestCreate, user: dict = Depends(require_user)) -> TestCreated:
     """
     Сохраняет контрольную целиком в ОДНОЙ транзакции.
 
@@ -72,7 +62,6 @@ def create_test(payload: TestCreate) -> TestCreated:
         logger.error("Нет соединения с базой: %s", exc)
         raise db_unavailable() from exc
 
-    results_token = generate_results_token()
     tasks_count = sum(len(variant.tasks) for variant in payload.variants)
 
     for attempt in range(CODE_ATTEMPTS):
@@ -84,17 +73,19 @@ def create_test(payload: TestCreate) -> TestCreated:
                 test_row = conn.execute(
                     """
                     INSERT INTO tests (
-                        title, teacher_name, share_token, results_token,
+                        title, subject, teacher_id, teacher_name, share_token,
                         classes, shuffle, variants_count, is_published
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
                     RETURNING id
                     """,
                     (
                         payload.title,
-                        payload.teacher_name,
+                        payload.subject,
+                        user["id"],
+                        # ФИО берём из учётной записи — форма его больше не присылает.
+                        user["full_name"],
                         code,
-                        results_token,
                         payload.classes,
                         payload.shuffle,
                         payload.variants_count,
@@ -170,9 +161,10 @@ def create_test(payload: TestCreate) -> TestCreated:
                                 )
 
             logger.info(
-                "Создана контрольная id=%s код=%s: умений %s, вариантов %s, заданий %s",
+                "Создана контрольная id=%s код=%s (учитель %s): умений %s, вариантов %s, заданий %s",
                 test_id,
                 code,
+                user["email"],
                 len(payload.skills),
                 payload.variants_count,
                 tasks_count,
@@ -180,7 +172,6 @@ def create_test(payload: TestCreate) -> TestCreated:
             return TestCreated(
                 id=test_id,
                 code=code,
-                results_token=results_token,
                 title=payload.title,
                 variants_count=payload.variants_count,
                 skills_count=len(payload.skills),
@@ -202,3 +193,47 @@ def create_test(payload: TestCreate) -> TestCreated:
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Не удалось сгенерировать уникальный код ссылки. Попробуйте ещё раз.",
     )
+
+
+# =====================================================================
+# Список своих контрольных
+# =====================================================================
+
+# Отдельный роутер: адрес /api/my/tests не вписывается в префикс /api/tests.
+my_router = APIRouter(prefix="/api/my", tags=["tests"])
+
+
+@my_router.get(
+    "/tests",
+    response_model=list[MyTestRow],
+    summary="Мои контрольные",
+)
+def my_tests(user: dict = Depends(require_user)) -> list[MyTestRow]:
+    """
+    Контрольные текущего учителя, новые сверху.
+
+    Администратор видит все контрольные школы: он отвечает за неё целиком
+    и должен уметь открыть чужие результаты (например, когда учитель уволился).
+    """
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.share_token AS code, t.title, t.subject, t.classes,
+                   t.variants_count, t.is_open, t.created_at,
+                   t.teacher_id, t.teacher_name,
+                   count(a.id) AS attempts_count
+            FROM tests t
+            LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
+            WHERE %s OR t.teacher_id = %s
+            GROUP BY t.id
+            ORDER BY t.created_at DESC, t.id DESC
+            """,
+            (user["role"] == "admin", user["id"]),
+        ).fetchall()
+
+    return [MyTestRow(**row) for row in rows]

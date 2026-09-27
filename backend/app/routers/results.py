@@ -1,26 +1,27 @@
 """
-Роутер результатов — то, что видит УЧИТЕЛЬ по секретной ссылке.
+Роутер результатов — то, что видит УЧИТЕЛЬ по своей контрольной.
 
-    GET    /api/results/{token}                      — таблица учеников и умений
-    GET    /api/results/{token}/attempts/{id}        — разбор одной работы
-    GET    /api/results/{token}/export.xlsx          — выгрузка в Excel (3 листа)
-    PATCH  /api/results/{token}                      — открыть/закрыть приём работ
-    DELETE /api/results/{token}/attempts/{id}        — удалить работу (разрешить пересдачу)
-    DELETE /api/results/{token}?confirm_title=...    — удалить контрольную целиком
+    GET    /api/tests/{id}/results                — таблица учеников и умений
+    GET    /api/tests/{id}/attempts/{attempt_id}  — разбор одной работы
+    GET    /api/tests/{id}/export.xlsx            — выгрузка в Excel (3 листа)
+    PATCH  /api/tests/{id}                        — открыть/закрыть приём работ
+    DELETE /api/tests/{id}/attempts/{attempt_id}  — удалить работу (разрешить пересдачу)
+    DELETE /api/tests/{id}?confirm_title=...      — удалить контрольную целиком
 
-Доступ: авторизации пока нет, вместо неё длинный секрет в адресе. Искать
-контрольную здесь можно ТОЛЬКО по results_token — ученический код не подойдёт.
+Доступ даёт учётная запись: владелец контрольной или администратор. Секретных
+ссылок больше нет — чужую контрольную не открыть, даже зная её номер.
 """
 
 import io
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Path, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from app import db
+from app.auth import can_manage_test, forbidden, require_user
 from app.schemas import (
     AttemptDetail,
     ResultsOverview,
@@ -30,12 +31,7 @@ from app.schemas import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/results", tags=["results"])
-
-# Ученический код — 8 символов; он не подойдёт и по длине, но проверку
-# всё равно делает база: 404 вместо результатов.
-TOKEN_MIN_LEN = 8
-TOKEN_MAX_LEN = 200
+router = APIRouter(prefix="/api/tests", tags=["results"])
 
 # Пороги освоения умения. Ниже 50% — не сформировано, выше 65% — в порядке.
 LEVEL_LOW = 50
@@ -54,11 +50,11 @@ def db_unavailable() -> HTTPException:
     )
 
 
-def results_not_found() -> HTTPException:
-    """404 на неверный токен, без подробностей: ссылка заменяет пароль."""
+def test_not_found() -> HTTPException:
+    """404 на несуществующую контрольную."""
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail="Результаты не найдены. Проверьте ссылку — она отличается от ученической.",
+        detail="Контрольная не найдена.",
     )
 
 
@@ -78,19 +74,28 @@ def fill_for(percent: int) -> PatternFill:
     return FILL_HIGH
 
 
-def load_test_by_results_token(conn, results_token: str) -> dict:
-    """Находит контрольную по СЕКРЕТНОМУ токену результатов или бросает 404."""
+def load_test_for_user(conn, test_id: int, user: dict) -> dict:
+    """
+    Находит контрольную и проверяет права на неё.
+
+    Чужая контрольная даёт 403, а не 404: скрывать сам факт её существования
+    не от кого — все учителя школы и так видят друг друга.
+    """
     row = conn.execute(
         """
-        SELECT id, title, teacher_name, share_token, classes, is_open, variants_count
+        SELECT id, title, subject, teacher_id, teacher_name, share_token,
+               classes, is_open, variants_count
         FROM tests
-        WHERE results_token = %s
+        WHERE id = %s
         """,
-        (results_token,),
+        (test_id,),
     ).fetchone()
 
     if row is None:
-        raise results_not_found()
+        raise test_not_found()
+
+    if not can_manage_test(user, row):
+        raise forbidden("Это контрольная другого учителя.")
 
     return row
 
@@ -190,12 +195,13 @@ def load_skill_stats(conn, test_id: int, skills: list[dict]) -> list[dict]:
 
 
 @router.get(
-    "/{results_token}",
+    "/{test_id}/results",
     response_model=ResultsOverview,
     summary="Таблица учеников, матрица умений и сводка",
 )
 def get_results(
-    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    test_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
 ) -> ResultsOverview:
     """Всё, что нужно главному экрану результатов, одним запросом."""
     try:
@@ -204,7 +210,7 @@ def get_results(
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        test_row = load_test_by_results_token(conn, results_token)
+        test_row = load_test_for_user(conn, test_id, user)
         skills = load_skills(conn, test_row["id"])
         attempt_rows = load_attempts(conn, test_row["id"])
         matrix = load_skill_matrix(conn, test_row["id"])
@@ -234,7 +240,9 @@ def get_results(
         )
 
     return ResultsOverview(
+        id=test_row["id"],
         title=test_row["title"],
+        subject=test_row["subject"],
         teacher_name=test_row["teacher_name"],
         code=test_row["share_token"],
         classes=test_row["classes"],
@@ -310,13 +318,14 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
 
 
 @router.get(
-    "/{results_token}/attempts/{attempt_id}",
+    "/{test_id}/attempts/{attempt_id}",
     response_model=AttemptDetail,
     summary="Разбор одной работы",
 )
 def get_attempt_detail(
-    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    test_id: int = Path(ge=1),
     attempt_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
 ) -> AttemptDetail:
     try:
         pool = db.get_pool()
@@ -324,7 +333,7 @@ def get_attempt_detail(
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        test_row = load_test_by_results_token(conn, results_token)
+        test_row = load_test_for_user(conn, test_id, user)
 
         # test_id в условии обязателен: иначе по одному токену можно было бы
         # листать работы из чужих контрольных, подставляя id.
@@ -362,7 +371,7 @@ def get_attempt_detail(
 
 
 @router.get(
-    "/{results_token}/export.xlsx",
+    "/{test_id}/export.xlsx",
     summary="Выгрузить результаты в Excel",
     response_class=Response,
     responses={
@@ -375,7 +384,8 @@ def get_attempt_detail(
     },
 )
 def export_results(
-    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    test_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
 ) -> Response:
     """
     Три листа:
@@ -389,7 +399,7 @@ def export_results(
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        test_row = load_test_by_results_token(conn, results_token)
+        test_row = load_test_for_user(conn, test_id, user)
         test_id = test_row["id"]
 
         skills = load_skills(conn, test_id)
@@ -559,13 +569,14 @@ def export_results(
 
 
 @router.patch(
-    "/{results_token}",
+    "/{test_id}",
     response_model=ResultsOverviewSettings,
     summary="Открыть или закрыть приём работ",
 )
 def update_settings(
     payload: TestSettingsUpdate,
-    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    test_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
 ) -> ResultsOverviewSettings:
     """Закрытый приём ничего не удаляет: сданные работы остаются на месте."""
     try:
@@ -574,7 +585,7 @@ def update_settings(
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        test_row = load_test_by_results_token(conn, results_token)
+        test_row = load_test_for_user(conn, test_id, user)
         conn.execute(
             "UPDATE tests SET is_open = %s WHERE id = %s",
             (payload.is_open, test_row["id"]),
@@ -589,13 +600,14 @@ def update_settings(
 
 
 @router.delete(
-    "/{results_token}/attempts/{attempt_id}",
+    "/{test_id}/attempts/{attempt_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить работу ученика (разрешить пересдачу)",
 )
 def delete_attempt(
-    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    test_id: int = Path(ge=1),
     attempt_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
 ) -> Response:
     """
     Удаляет одну работу — так учитель разрешает пересдачу: запись о попытке
@@ -607,7 +619,7 @@ def delete_attempt(
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        test_row = load_test_by_results_token(conn, results_token)
+        test_row = load_test_for_user(conn, test_id, user)
 
         deleted = conn.execute(
             "DELETE FROM attempts WHERE id = %s AND test_id = %s RETURNING id",
@@ -625,12 +637,13 @@ def delete_attempt(
 
 
 @router.delete(
-    "/{results_token}",
+    "/{test_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить контрольную вместе со всеми работами",
 )
 def delete_test(
-    results_token: str = Path(min_length=TOKEN_MIN_LEN, max_length=TOKEN_MAX_LEN),
+    test_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
     confirm_title: str = Query(
         description="Точное название контрольной — подтверждение удаления",
     ),
@@ -646,7 +659,7 @@ def delete_test(
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        test_row = load_test_by_results_token(conn, results_token)
+        test_row = load_test_for_user(conn, test_id, user)
 
         # Сравниваем без пробелов по краям: учитель мог скопировать название.
         if confirm_title.strip() != test_row["title"].strip():

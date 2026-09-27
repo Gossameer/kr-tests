@@ -1,16 +1,77 @@
 /**
- * Каркас приложения: шапка, общая обёртка и роутинг.
- * Сам <BrowserRouter> подключён в main.tsx.
+ * Каркас приложения: шапка, меню по роли, роутинг и защита страниц.
+ *
+ * Страницы делятся на три группы:
+ *   * публичные — вход, регистрация и страница ученика /t/:code;
+ *   * для вошедших — кабинет, создание контрольной, результаты;
+ *   * для администратора — учителя, статистика, настройки.
  */
 
-import { Link, Route, Routes } from 'react-router'
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router'
+import type { ReactNode } from 'react'
+import { useAuth } from './lib/authContext'
+import AdminSettingsPage from './pages/AdminSettingsPage'
+import AdminStatsPage from './pages/AdminStatsPage'
+import AdminTeachersPage from './pages/AdminTeachersPage'
 import CreateTestPage from './pages/CreateTestPage'
 import HomePage from './pages/HomePage'
+import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
 import ResultsPage from './pages/ResultsPage'
 import StudentTestPage from './pages/StudentTestPage'
 
-/** Шапка одна на все страницы: по ней видно, что это сервис школы, а не случайный сайт. */
+/**
+ * Пускает дальше только вошедших.
+ *
+ * Пока идёт первый запрос «кто я», ничего не решаем: иначе на долю секунды
+ * мелькал бы экран входа у уже вошедшего человека.
+ */
+function Protected({ children, adminOnly = false }: { children: ReactNode; adminOnly?: boolean }) {
+  const { user, loading } = useAuth()
+  const location = useLocation()
+
+  if (loading) {
+    return (
+      <main className="page">
+        <p className="loading">Проверяем вход…</p>
+      </main>
+    )
+  }
+
+  if (user === null) {
+    // Запоминаем, куда человек шёл, — после входа вернём его туда же.
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
+  }
+
+  if (adminOnly && user.role !== 'admin') {
+    return (
+      <main className="page">
+        <h1>Раздел только для администратора</h1>
+        <p className="lead">
+          Если вам нужен доступ, обратитесь к администратору школы.
+        </p>
+        <Link className="btn btn--primary" to="/">
+          К моим контрольным
+        </Link>
+      </main>
+    )
+  }
+
+  return <>{children}</>
+}
+
+/** Шапка: название школы, меню по роли, имя вошедшего и выход. */
 function TopBar() {
+  const { user, signOut } = useAuth()
+
+  async function handleSignOut() {
+    try {
+      await signOut()
+    } catch {
+      // Даже если сервер не ответил, на клиенте мы уже «вышли».
+    }
+  }
+
   return (
     <header className="topbar">
       <div className="topbar__inner">
@@ -19,6 +80,48 @@ function TopBar() {
           <span className="topbar__dot">·</span>
           <span className="topbar__name">Контрольные работы</span>
         </Link>
+
+        {user !== null && (
+          <nav className="topbar__nav">
+            <Link className="topbar__link" to="/">
+              {user.role === 'admin' ? 'Контрольные' : 'Мои контрольные'}
+            </Link>
+            <Link className="topbar__link" to="/create">
+              Создать
+            </Link>
+            {user.role === 'admin' && (
+              <>
+                <Link className="topbar__link" to="/admin/stats">
+                  Статистика
+                </Link>
+                <Link className="topbar__link" to="/admin/teachers">
+                  Учителя
+                </Link>
+                <Link className="topbar__link" to="/admin/settings">
+                  Настройки
+                </Link>
+              </>
+            )}
+          </nav>
+        )}
+
+        <div className="topbar__user">
+          {user !== null ? (
+            <>
+              <span className="topbar__person" title={user.email}>
+                {user.full_name}
+                {user.role === 'admin' && <span className="tag">админ</span>}
+              </span>
+              <button type="button" className="btn btn--small btn--ghost" onClick={handleSignOut}>
+                Выйти
+              </button>
+            </>
+          ) : (
+            <Link className="btn btn--small btn--ghost" to="/login">
+              Войти
+            </Link>
+          )}
+        </div>
       </div>
     </header>
   )
@@ -30,13 +133,64 @@ export default function App() {
       <TopBar />
 
       <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/create" element={<CreateTestPage />} />
-        {/* Ссылка для учеников: /t/<код контрольной> */}
+        {/* Публичное */}
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        {/* Ссылка для учеников: вход не нужен */}
         <Route path="/t/:code" element={<StudentTestPage />} />
-        {/* Секретная ссылка учителя на результаты: /r/<длинный токен> */}
-        <Route path="/r/:token" element={<ResultsPage />} />
-        {/* Любой другой адрес — короткое понятное сообщение вместо пустой страницы. */}
+
+        {/* Для вошедших учителей */}
+        <Route
+          path="/"
+          element={
+            <Protected>
+              <HomePage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/create"
+          element={
+            <Protected>
+              <CreateTestPage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/tests/:testId/results"
+          element={
+            <Protected>
+              <ResultsPage />
+            </Protected>
+          }
+        />
+
+        {/* Только администратор */}
+        <Route
+          path="/admin/teachers"
+          element={
+            <Protected adminOnly>
+              <AdminTeachersPage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/stats"
+          element={
+            <Protected adminOnly>
+              <AdminStatsPage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/settings"
+          element={
+            <Protected adminOnly>
+              <AdminSettingsPage />
+            </Protected>
+          }
+        />
+
         <Route
           path="*"
           element={

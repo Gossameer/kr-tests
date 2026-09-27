@@ -19,7 +19,6 @@ import SkillEditor from '../components/SkillEditor'
 import TaskTable from '../components/TaskTable'
 import { buildTestPrompt } from '../lib/aiPrompt'
 import { emptyTask, parseTestJson, validateTest } from '../lib/parseTestJson'
-import { rememberTest } from '../lib/myTestsStorage'
 import type { CreatedTest, SkillDraft, VariantDraft } from '../types'
 
 /** Разбирает «8А, 8Б 8В» в ['8А','8Б','8В']. */
@@ -45,8 +44,9 @@ function buildEmptyVariants(skills: SkillDraft[], variantsCount: number): Varian
 
 export default function CreateTestPage() {
   // --- Шапка ---
-  const [teacherName, setTeacherName] = useState('')
+  // ФИО учителя больше не спрашиваем: сервер берёт его из учётной записи.
   const [title, setTitle] = useState('')
+  const [subject, setSubject] = useState('')
   const [classesRaw, setClassesRaw] = useState('')
   const [variantsCount, setVariantsCount] = useState(2)
   const [shuffle, setShuffle] = useState(true)
@@ -55,8 +55,8 @@ export default function CreateTestPage() {
   const [skills, setSkills] = useState<SkillDraft[]>([])
 
   // --- Промт и ответ ИИ ---
-  const [subject, setSubject] = useState('')
   const [grade, setGrade] = useState('')
+  const [topic, setTopic] = useState('')
   const [aiRaw, setAiRaw] = useState('')
   const [aiErrors, setAiErrors] = useState<string[]>([])
   const [aiLoaded, setAiLoaded] = useState('')
@@ -71,7 +71,11 @@ export default function CreateTestPage() {
   const [created, setCreated] = useState<CreatedTest | null>(null)
 
   const classes = parseClasses(classesRaw)
-  const promptFields = { subject, grade }
+  // В промт уходит «предмет, тема»: ИИ так точнее попадает в программу.
+  const promptFields = {
+    subject: [subject.trim(), topic.trim()].filter((part) => part !== '').join(', '),
+    grade,
+  }
   const prompt = buildTestPrompt(promptFields, skills, variantsCount)
 
   async function handleCopyPrompt() {
@@ -121,11 +125,11 @@ export default function CreateTestPage() {
   function validateAll(): string[] {
     const found: string[] = []
 
-    if (teacherName.trim() === '') {
-      found.push('Укажите своё имя — оно будет видно ученикам.')
-    }
     if (title.trim() === '') {
       found.push('Укажите название контрольной.')
+    }
+    if (subject.trim() === '') {
+      found.push('Укажите предмет — по нему собирается статистика школы.')
     }
     if (classes.length === 0) {
       found.push('Укажите хотя бы один класс, например: 8А, 8Б.')
@@ -148,7 +152,7 @@ export default function CreateTestPage() {
     try {
       const result = await createTest({
         title: title.trim(),
-        teacher_name: teacherName.trim(),
+        subject: subject.trim(),
         classes,
         variants_count: variantsCount,
         shuffle,
@@ -174,13 +178,6 @@ export default function CreateTestPage() {
       })
 
       setCreated(result)
-      rememberTest({
-        code: result.code,
-        resultsToken: result.results_token,
-        title: result.title,
-        questionsCount: result.tasks_count,
-        createdAt: new Date().toISOString(),
-      })
     } catch (error: unknown) {
       setErrors([error instanceof Error ? error.message : 'Не удалось опубликовать'])
     } finally {
@@ -191,6 +188,7 @@ export default function CreateTestPage() {
   function handleReset() {
     setTitle('')
     setClassesRaw('')
+    // Предмет и класс оставляем: учитель обычно делает несколько работ подряд.
     setSkills([])
     setVariants([])
     setAiRaw('')
@@ -198,11 +196,11 @@ export default function CreateTestPage() {
     setAiLoaded('')
     setErrors([])
     setCreated(null)
-    // Имя учителя, предмет и класс оставляем: контрольные создают подряд.
+    setTopic('')
   }
 
   const studentUrl = created ? `${window.location.origin}/t/${created.code}` : ''
-  const resultsUrl = created ? `${window.location.origin}/r/${created.results_token}` : ''
+  const resultsUrl = created ? `/tests/${created.id}/results` : ''
 
   // ------------------------------------------------------------------
   // Экран после публикации
@@ -223,20 +221,16 @@ export default function CreateTestPage() {
             url={studentUrl}
             hint="Эту ссылку отправьте классу — вариант выдаётся каждому автоматически."
           />
-          <CopyLink
-            secret
-            label="Результаты — только для вас, не отправляйте ученикам"
-            url={resultsUrl}
-            hint={
-              'По этой ссылке видны все работы, правильные ответы и решения. ' +
-              'Она сохранена в списке «Мои контрольные» на главной странице этого браузера.'
-            }
-          />
+
+          <p className="hint">
+            Результаты открываются из вашего кабинета — отдельная ссылка больше не нужна,
+            доступ есть только у вас и у администратора.
+          </p>
 
           <div className="row">
-            <a className="btn btn--primary" href={resultsUrl}>
+            <Link className="btn btn--primary" to={resultsUrl}>
               Открыть результаты
-            </a>
+            </Link>
             <button type="button" className="btn btn--ghost" onClick={handleReset}>
               Создать ещё одну
             </button>
@@ -272,20 +266,6 @@ export default function CreateTestPage() {
 
         <div className="fields">
           <div className="field">
-            <label className="label" htmlFor="teacher-name">
-              Ваше имя
-            </label>
-            <input
-              id="teacher-name"
-              className="input"
-              value={teacherName}
-              onChange={(event) => setTeacherName(event.target.value)}
-              placeholder="Иванова Анна Петровна"
-              autoComplete="name"
-            />
-          </div>
-
-          <div className="field">
             <label className="label" htmlFor="test-title">
               Название контрольной
             </label>
@@ -296,6 +276,36 @@ export default function CreateTestPage() {
               onChange={(event) => setTitle(event.target.value)}
               placeholder="Квадратные уравнения. Контрольная №2"
             />
+          </div>
+
+          <div className="field">
+            <label className="label" htmlFor="test-subject">
+              Предмет
+            </label>
+            <input
+              id="test-subject"
+              className="input"
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="алгебра"
+              list="subject-options"
+            />
+            {/* Подсказки — но вписать можно любой предмет. */}
+            <datalist id="subject-options">
+              <option value="алгебра" />
+              <option value="геометрия" />
+              <option value="русский язык" />
+              <option value="литература" />
+              <option value="физика" />
+              <option value="химия" />
+              <option value="биология" />
+              <option value="история" />
+              <option value="обществознание" />
+              <option value="география" />
+              <option value="английский язык" />
+              <option value="информатика" />
+            </datalist>
+            <p className="hint">По предмету строится статистика школы.</p>
           </div>
         </div>
 
@@ -365,16 +375,17 @@ export default function CreateTestPage() {
 
         <div className="fields fields--inline">
           <div className="field">
-            <label className="label" htmlFor="ai-subject">
-              Предмет и тема
+            <label className="label" htmlFor="ai-topic">
+              Тема для ИИ
             </label>
             <input
-              id="ai-subject"
+              id="ai-topic"
               className="input"
-              value={subject}
-              onChange={(event) => setSubject(event.target.value)}
-              placeholder="Алгебра, квадратные уравнения"
+              value={topic}
+              onChange={(event) => setTopic(event.target.value)}
+              placeholder="квадратные уравнения"
             />
+            <p className="hint">Предмет подставится из шапки: {subject || 'не указан'}.</p>
           </div>
           <div className="field field--narrow">
             <label className="label" htmlFor="ai-grade">

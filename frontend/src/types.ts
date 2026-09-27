@@ -49,7 +49,8 @@ export type VariantDraft = {
 /** Тело POST /api/tests */
 export type TestCreatePayload = {
   title: string
-  teacher_name: string
+  /** Предмет: нужен для школьной статистики. */
+  subject: string
   classes: string[]
   variants_count: number
   shuffle: boolean
@@ -76,7 +77,6 @@ export type TestCreatePayload = {
 export type CreatedTest = {
   id: number
   code: string
-  results_token: string
   title: string
   variants_count: number
   skills_count: number
@@ -207,7 +207,9 @@ export type SkillStat = {
 
 /** Ответ GET /api/results/{token} */
 export type ResultsOverview = {
+  id: number
   title: string
+  subject: string
   teacher_name: string
   code: string
   classes: string[]
@@ -244,4 +246,91 @@ export type AttemptDetail = {
   percent: number
   finished_at: string | null
   items: AttemptDetailItem[]
+}
+
+
+/* ===================== Учётные записи ===================== */
+
+export type UserRole = 'teacher' | 'admin'
+
+/** Кто сейчас вошёл. */
+export type User = {
+  id: number
+  full_name: string
+  email: string
+  role: UserRole
+  is_active: boolean
+  created_at: string
+  last_login_at: string | null
+}
+
+/** Строка списка «Мои контрольные» — приходит с сервера, а не из браузера. */
+export type MyTest = {
+  id: number
+  code: string
+  title: string
+  subject: string
+  classes: string[]
+  variants_count: number
+  is_open: boolean
+  created_at: string
+  attempts_count: number
+  teacher_name: string
+  teacher_id: number
+}
+
+/* ===================== Админка ===================== */
+
+export type TeacherRow = {
+  id: number
+  full_name: string
+  email: string
+  role: UserRole
+  is_active: boolean
+  created_at: string
+  last_login_at: string | null
+  tests_count: number
+  attempts_count: number
+}
+
+export type PasswordReset = {
+  user_id: number
+  email: string
+  temporary_password: string
+}
+
+export type SchoolSettings = {
+  school_code: string
+}
+
+export type SchoolStats = {
+  totals: {
+    teachers: number
+    tests: number
+    attempts_total: number
+    attempts_week: number
+    attempts_month: number
+  }
+  by_teacher: {
+    id: number
+    full_name: string
+    tests_count: number
+    attempts_count: number
+    average_percent: number
+  }[]
+  by_subject: { subject: string; attempts_count: number; average_percent: number }[]
+  by_class: { student_class: string; attempts_count: number; average_percent: number }[]
+  weak_skills: {
+    skill_id: number
+    title: string
+    subject: string
+    test_title: string
+    teacher_name: string
+    student_class: string
+    answers_count: number
+    percent: number
+    is_weak: boolean
+  }[]
+  by_day: { day: string; attempts_count: number }[]
+  filters: { subjects: string[]; classes: string[]; weak_below: number }
 }

@@ -1282,3 +1282,193 @@ code {
     font-size: 0.72rem;
   }
 }
+
+/* ===================== Шапка с меню и пользователем ===================== */
+
+.topbar__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-m);
+}
+
+.topbar__nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-m);
+  /* Меню занимает свободное место, пользователь уезжает вправо. */
+  flex: 1 1 auto;
+}
+
+.topbar__link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.93rem;
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+}
+
+.topbar__link:hover {
+  color: var(--text);
+  border-bottom-color: var(--brand);
+}
+
+.topbar__user {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-s);
+  margin-left: auto;
+}
+
+.topbar__person {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  font-size: 0.9rem;
+}
+
+/* Метка роли рядом с именем. */
+.tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* ===================== Узкие страницы (вход, регистрация, настройки) ===================== */
+
+.page--narrow {
+  max-width: 460px;
+}
+
+/* ===================== Плитки сводки ===================== */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--gap-s);
+  margin: var(--gap-m) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tile {
+  padding: var(--gap-m);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.tile__value {
+  display: block;
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile__label {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ===================== Две колонки (предметы и классы) ===================== */
+
+.twocol {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-l);
+  margin-top: var(--gap-m);
+}
+
+.twocol h3 {
+  margin-bottom: var(--gap-xs);
+}
+
+/* ===================== График активности ===================== */
+
+.chart {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--gap-xs);
+  height: 180px;
+  margin: var(--gap-m) 0 0;
+  padding: 0;
+  list-style: none;
+  overflow-x: auto;
+}
+
+.chart__item {
+  display: flex;
+  flex: 0 0 44px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  gap: 4px;
+}
+
+.chart__count {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart__bar {
+  width: 100%;
+  min-height: 3px;
+  border-radius: 4px 4px 0 0;
+  background: var(--brand);
+}
+
+.chart__day {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* ===================== Временный пароль ===================== */
+
+.temppass {
+  margin: var(--gap-s) 0 0;
+  padding: var(--gap-m);
+  border: 1px dashed var(--ok);
+  border-radius: var(--radius);
+  background: var(--ok-soft);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 1.25rem;
+  letter-spacing: 0.06em;
+  text-align: center;
+  /* Пароль нужно выделить и скопировать — разрешаем выделение по двойному клику. */
+  user-select: all;
+}
+
+@media (max-width: 620px) {
+  .topbar__inner {
+    gap: var(--gap-s);
+  }
+
+  .topbar__nav {
+    order: 3;
+    width: 100%;
+    gap: var(--gap-m);
+    font-size: 0.9rem;
+  }
+
+  .topbar__person {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .twocol {
+    grid-template-columns: 1fr;
+  }
+
+  .tiles {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  }
+}
