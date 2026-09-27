@@ -1,0 +1,92 @@
+# =====================================================================
+# Заготовка для /opt/2090-fun-infra/docker-compose.yml
+#
+# Скопируйте блоки ниже в раздел services общего файла, а строку из раздела
+# volumes — в конец файла, к остальным томам. Отступы сохраните: в YAML они
+# определяют вложенность.
+#
+# Что здесь есть и чего намеренно нет:
+#   * портов наружу (ports:) нет ни у одного сервиса — снаружи виден только
+#     edge-caddy, а между собой контейнеры общаются по именам сервисов;
+#   * база данных доступна только бэкенду, из интернета к ней хода нет;
+#   * healthcheck'и у всех трёх: compose не считает сервис поднятым, пока он
+#     реально не отвечает, и не запускает бэкенд раньше базы;
+#   * restart: unless-stopped — сервисы поднимутся сами после перезагрузки VPS.
+# =====================================================================
+
+services:
+  # ------------------------------------------------------------------
+  # База данных
+  # ------------------------------------------------------------------
+  kr-postgres:
+    image: postgres:16-alpine
+    container_name: kr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KR_POSTGRES_DB}
+      POSTGRES_USER: ${KR_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${KR_POSTGRES_PASSWORD}
+    env_file:
+      - env/kr.env
+    volumes:
+      # Свой том: данные переживают пересборку и обновление образа.
+      - kr-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready возвращает 0, только когда база готова принимать запросы.
+      test: ["CMD-SHELL", "pg_isready -U ${KR_POSTGRES_USER} -d ${KR_POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ------------------------------------------------------------------
+  # Бэкенд (FastAPI)
+  # ------------------------------------------------------------------
+  kr-backend:
+    build:
+      context: ./apps/kr-tests/backend
+      dockerfile: Dockerfile
+    container_name: kr-backend
+    restart: unless-stopped
+    env_file:
+      - env/kr.env
+    depends_on:
+      kr-postgres:
+        # Бэкенд стартует только после того, как база ответила на pg_isready.
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ------------------------------------------------------------------
+  # Фронтенд (собранный Vite под nginx)
+  # ------------------------------------------------------------------
+  kr-frontend:
+    build:
+      context: ./apps/kr-tests/frontend
+      dockerfile: Dockerfile
+    container_name: kr-frontend
+    restart: unless-stopped
+    depends_on:
+      - kr-backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# =====================================================================
+# Эту строку добавьте в раздел volumes: общего docker-compose.yml
+# =====================================================================
+volumes:
+  kr-postgres-data:

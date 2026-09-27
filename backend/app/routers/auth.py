@@ -20,6 +20,7 @@ from app import db
 from app.auth import (
     SESSION_COOKIE,
     clear_session_cookie,
+    client_ip,
     create_session,
     current_user,
     db_unavailable,
@@ -30,6 +31,7 @@ from app.schemas import LoginIn, RegisterIn, UserOut
 from app.security import (
     LOGIN_WINDOW_MINUTES,
     MAX_FAILED_LOGINS,
+    MAX_FAILED_LOGINS_PER_IP,
     hash_password,
     normalize_email,
     verify_password,
@@ -45,29 +47,35 @@ def get_setting(conn, key: str, default: str = "") -> str:
     return row["value"] if row else default
 
 
-def too_many_attempts(conn, email: str) -> bool:
+def too_many_attempts(conn, email: str, ip: str) -> bool:
     """
-    Не слишком ли часто пробуют этот email.
+    Не слишком ли часто пробуют войти.
 
-    Считаем неудачные попытки за последние LOGIN_WINDOW_MINUTES минут.
-    Успешный вход журналируется тоже — по нему видно, что подбор удался.
+    Считаем неудачные попытки за последние LOGIN_WINDOW_MINUTES минут двумя
+    способами: по email и по адресу клиента. Только по email мало — перебирая
+    разные адреса почты, злоумышленник обошёл бы счётчик.
+
+    Успешный вход журналируется тоже: по журналу видно, чем закончился подбор.
     """
     since = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_WINDOW_MINUTES)
     row = conn.execute(
         """
-        SELECT count(*) AS n
+        SELECT
+            count(*) FILTER (WHERE email = %s)               AS by_email,
+            count(*) FILTER (WHERE ip = %s AND ip <> '')     AS by_ip
         FROM login_attempts
-        WHERE email = %s AND success = FALSE AND created_at > %s
+        WHERE success = FALSE AND created_at > %s
         """,
-        (email, since),
+        (email, ip, since),
     ).fetchone()
-    return row["n"] >= MAX_FAILED_LOGINS
+
+    return row["by_email"] >= MAX_FAILED_LOGINS or row["by_ip"] >= MAX_FAILED_LOGINS_PER_IP
 
 
-def log_attempt(conn, email: str, success: bool) -> None:
+def log_attempt(conn, email: str, ip: str, success: bool) -> None:
     conn.execute(
-        "INSERT INTO login_attempts (email, success) VALUES (%s, %s)",
-        (email, success),
+        "INSERT INTO login_attempts (email, ip, success) VALUES (%s, %s, %s)",
+        (email, ip, success),
     )
 
 
@@ -128,7 +136,7 @@ def register(payload: RegisterIn, response: Response) -> UserOut:
 
 
 @router.post("/login", response_model=UserOut, summary="Вход по email и паролю")
-def login(payload: LoginIn, response: Response) -> UserOut:
+def login(payload: LoginIn, request: Request, response: Response) -> UserOut:
     """
     Проверяет пароль и создаёт сессию.
 
@@ -141,10 +149,11 @@ def login(payload: LoginIn, response: Response) -> UserOut:
         raise db_unavailable() from exc
 
     email = normalize_email(payload.email)
+    ip = client_ip(request)
 
     with pool.connection() as conn:
-        if too_many_attempts(conn, email):
-            logger.warning("Слишком много попыток входа: %s", email)
+        if too_many_attempts(conn, email, ip):
+            logger.warning("Слишком много попыток входа: %s с адреса %s", email, ip or "?")
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=(
@@ -164,7 +173,7 @@ def login(payload: LoginIn, response: Response) -> UserOut:
         ).fetchone()
 
         if user_row is None or not verify_password(payload.password, user_row["password_hash"]):
-            log_attempt(conn, email, success=False)
+            log_attempt(conn, email, ip, success=False)
             # commit обязателен: дальше летит исключение, а выход из блока
             # `with pool.connection()` по исключению откатывает транзакцию —
             # и запись о неудачной попытке пропала бы вместе с ней.
@@ -176,7 +185,7 @@ def login(payload: LoginIn, response: Response) -> UserOut:
             )
 
         if not user_row["is_active"]:
-            log_attempt(conn, email, success=False)
+            log_attempt(conn, email, ip, success=False)
             conn.commit()
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -184,7 +193,7 @@ def login(payload: LoginIn, response: Response) -> UserOut:
             )
 
         with conn.transaction():
-            log_attempt(conn, email, success=True)
+            log_attempt(conn, email, ip, success=True)
             token, _ = create_session(conn, user_row["id"])
             conn.execute(
                 "UPDATE users SET last_login_at = now() WHERE id = %s",

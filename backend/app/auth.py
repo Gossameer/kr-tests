@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, HTTPException, Request, Response, status
 
 from app import db
+from app.config import get_settings
 from app.security import session_expires_at, new_session_token
 
 logger = logging.getLogger(__name__)
@@ -59,15 +60,15 @@ def set_session_cookie(response: Response, token: str) -> None:
 
     httponly — cookie не видна из JavaScript;
     samesite="lax" — cookie не уходит на чужие сайты, но обычные переходы работают;
-    secure=False — сервис пока живёт по http на школьном компьютере; при переезде
-    на https это обязательно нужно поменять на True.
+    secure — берётся из настройки COOKIE_SECURE: на сервере за https она true,
+    локально false (иначе браузер не сохранит cookie на http, и вход не сработает).
     """
     response.set_cookie(
         key=SESSION_COOKIE,
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=get_settings().cookie_secure,
         max_age=60 * 60 * 24 * 30,
         path="/",
     )
@@ -135,6 +136,25 @@ def require_admin(user: dict = Depends(require_user)) -> dict:
     if user["role"] != "admin":
         raise forbidden("Этот раздел доступен только администратору.")
     return user
+
+
+def client_ip(request: Request) -> str:
+    """
+    Настоящий адрес клиента.
+
+    За обратным прокси request.client — это сам прокси, а адрес посетителя
+    приходит первым значением в X-Forwarded-For. Верить заголовку можно только
+    когда сервис действительно закрыт прокси: иначе кто угодно подставит себе
+    чужой адрес и обойдёт ограничение на подбор пароля. Поэтому чтение заголовка
+    включается настройкой TRUST_PROXY.
+    """
+    if get_settings().trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            # Формат: «клиент, прокси1, прокси2» — нужен первый адрес.
+            return forwarded.split(",")[0].strip()[:64]
+
+    return request.client.host if request.client else ""
 
 
 def can_manage_test(user: dict, test_row: dict) -> bool:

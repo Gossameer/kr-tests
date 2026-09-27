@@ -51,8 +51,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="API сервиса контрольных работ: тесты с выбором ответа.",
+    description="API сервиса контрольных работ по умениям.",
     lifespan=lifespan,
+    # На школьном сервере автодокументацию выключаем (DOCS_ENABLED=false):
+    # она перечисляет все эндпоинты, а пользы посетителям не приносит.
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
 # CORS: браузер по умолчанию запрещает странице с localhost:5174 (фронтенд)
