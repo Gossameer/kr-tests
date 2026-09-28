@@ -1,0 +1,54 @@
+  # ─────────── kr-tests: сервис контрольных (kr.2090.fun) ───────────
+  kr-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    env_file: [env/kr.env]
+    environment:
+      POSTGRES_USER: kr_user
+      POSTGRES_DB: kr_tests
+    volumes:
+      - kr-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kr_user -d kr_tests"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [kr]
+
+  kr-backend:
+    build: ./apps/kr-tests/backend
+    image: kr-backend:latest
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    env_file: [env/kr.env]
+    depends_on:
+      kr-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [edge, kr]
+
+  kr-frontend:
+    build: ./apps/kr-tests/frontend
+    image: kr-frontend:latest
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [edge]
