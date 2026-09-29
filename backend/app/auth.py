@@ -28,14 +28,14 @@ SESSION_COOKIE = "kr_session"
 def db_unavailable() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="База данных недоступна. Попробуйте позже.",
+        detail="Сервис временно недоступен. Подождите минуту и обновите страницу.",
     )
 
 
 def not_authenticated() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Нужно войти в систему.",
+        detail="Войдите в систему — сессия закончилась или вы ещё не входили.",
     )
 
 
@@ -159,7 +159,7 @@ def client_ip(request: Request) -> str:
 
 def can_manage_test(user: dict, test_row: dict) -> bool:
     """
-    Может ли пользователь смотреть и менять эту контрольную.
+    Может ли пользователь смотреть и менять эту проверочную работу.
 
     Владелец — да. Администратор — да (он отвечает за школу целиком).
     Остальные учителя — нет, даже если знают адрес.

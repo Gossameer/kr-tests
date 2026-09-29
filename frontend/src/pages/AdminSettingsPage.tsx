@@ -8,8 +8,10 @@
 
 import { useEffect, useState } from 'react'
 import { fetchSchoolSettings, updateSchoolSettings } from '../api'
+import { usePageTitle } from '../lib/usePageTitle'
 
 export default function AdminSettingsPage() {
+  usePageTitle('Настройки школы')
   const [code, setCode] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')

@@ -26,7 +26,7 @@ export type ParseTaskResult =
  * Достаёт JSON из ответа ИИ.
  *
  * ИИ часто отвечает так:
- *     Вот ваша контрольная:
+ *     Вот ваша проверочная работа:
  *     ```json
  *     { "variants": [...] }
  *     ```
@@ -75,6 +75,14 @@ export function emptyTask(skillIndex: number, format: AnswerFormat): TaskDraft {
   }
 }
 
+/**
+ * Заменяет «*» на школьный знак умножения «·»: «3 * 4», «3*4», «2*x» → «3 · 4».
+ * «**» (жирный шрифт в markdown) не трогаем. То же делает сервер при генерации.
+ */
+export function schoolSigns(text: string): string {
+  return text.replace(/(?<=[\p{L}\p{N}_)\]])\s*(?<!\*)\*(?!\*)\s*(?=[\p{L}\p{N}_([])|\s\*\s/gu, ' · ')
+}
+
 /** Разбирает одно задание из объекта ИИ. */
 function readTask(source: Record<string, unknown>, skillIndex: number): TaskDraft {
   const format: AnswerFormat = asString(source.format) === 'choice' ? 'choice' : 'input'
@@ -82,9 +90,9 @@ function readTask(source: Record<string, unknown>, skillIndex: number): TaskDraf
 
   return {
     skillIndex,
-    text: asString(source.text),
+    text: schoolSigns(asString(source.text)),
     answerFormat: format,
-    options: format === 'choice' ? asStringList(source.options) : [],
+    options: format === 'choice' ? asStringList(source.options).map(schoolSigns) : [],
     correct:
       format === 'choice' && typeof correctRaw === 'number' && Number.isInteger(correctRaw)
         ? correctRaw
@@ -92,7 +100,7 @@ function readTask(source: Record<string, unknown>, skillIndex: number): TaskDraf
           ? null
           : null,
     acceptedAnswers: format === 'input' ? asStringList(source.answers) : [],
-    solution: asString(source.solution),
+    solution: schoolSigns(asString(source.solution)),
   }
 }
 
@@ -128,7 +136,7 @@ export function parseSingleTask(raw: string, skillIndex: number): ParseTaskResul
   return { ok: true, task }
 }
 
-/** Разбирает ответ ИИ на промт всей контрольной. */
+/** Разбирает ответ ИИ на промт всей проверочной работы. */
 export function parseTestJson(raw: string): ParseResult {
   if (!raw.trim()) {
     return { ok: false, errors: ['Поле пустое — вставьте ответ ИИ.'] }
@@ -208,6 +216,73 @@ export function parseTestJson(raw: string): ParseResult {
   }
 
   return { ok: true, variants }
+}
+
+/** Чего не хватает заданию: поле редактора и понятная фраза. */
+export type TaskProblem = {
+  /** Какое поле править: текст, правильный ответ (ввод) или варианты (выбор). */
+  field: 'text' | 'answers' | 'options' | 'correct'
+  /** Коротко, для списка «осталось»: «нет ответа». */
+  short: string
+  /** Подробно, для подсказки под полем: что сделать и пример. */
+  message: string
+}
+
+/**
+ * Первая проблема задания или null, если его можно публиковать.
+ * Те же правила, что в validateTest и на сервере, — но по одному заданию,
+ * чтобы подсказать учителю конкретное поле.
+ */
+export function taskProblem(task: TaskDraft): TaskProblem | null {
+  if (task.text.trim() === '') {
+    return {
+      field: 'text',
+      short: 'нет текста',
+      message: 'Введите текст задания, например: «Найдите 3/5 от 20».',
+    }
+  }
+
+  if (task.answerFormat === 'choice') {
+    const options = task.options.map((option) => option.trim())
+    if (options.filter((option) => option !== '').length < 2) {
+      return {
+        field: 'options',
+        short: 'нужно хотя бы 2 варианта ответа',
+        message: 'Впишите хотя бы два варианта ответа.',
+      }
+    }
+    if (options.some((option) => option === '')) {
+      return {
+        field: 'options',
+        short: 'есть пустой вариант ответа',
+        message: 'Заполните пустой вариант ответа или удалите его крестиком.',
+      }
+    }
+    if (new Set(options).size !== options.length) {
+      return {
+        field: 'options',
+        short: 'варианты ответа повторяются',
+        message: 'Два варианта ответа одинаковые — сделайте их разными.',
+      }
+    }
+    if (task.correct === null || task.correct < 0 || task.correct >= options.length) {
+      return {
+        field: 'correct',
+        short: 'не отмечен правильный ответ',
+        message: 'Отметьте кружком правильный вариант ответа.',
+      }
+    }
+    return null
+  }
+
+  if (!task.acceptedAnswers.some((answer) => answer.trim() !== '')) {
+    return {
+      field: 'answers',
+      short: 'нет правильного ответа',
+      message: 'Укажите правильный ответ, например: 12. Несколько записей — через «|»: 0,5 | 1/2.',
+    }
+  }
+  return null
 }
 
 /**

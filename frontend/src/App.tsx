@@ -3,13 +3,14 @@
  *
  * Страницы делятся на три группы:
  *   * публичные — вход, регистрация и страница ученика /t/:code;
- *   * для вошедших — кабинет, создание контрольной, результаты;
- *   * для администратора — учителя, статистика, настройки.
+ *   * для вошедших — кабинет, создание проверочной работы, результаты;
+ *   * для администратора — учителя, статистика, расход ИИ, настройки.
  */
 
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router'
 import type { ReactNode } from 'react'
 import { useAuth } from './lib/authContext'
+import AdminAiPage from './pages/AdminAiPage'
 import AdminSettingsPage from './pages/AdminSettingsPage'
 import AdminStatsPage from './pages/AdminStatsPage'
 import AdminTeachersPage from './pages/AdminTeachersPage'
@@ -51,7 +52,7 @@ function Protected({ children, adminOnly = false }: { children: ReactNode; admin
           Если вам нужен доступ, обратитесь к администратору школы.
         </p>
         <Link className="btn btn--primary" to="/">
-          К моим контрольным
+          К моим работам
         </Link>
       </main>
     )
@@ -78,13 +79,13 @@ function TopBar() {
         <Link className="topbar__brand" to="/">
           <span className="topbar__school">Школа №2090</span>
           <span className="topbar__dot">·</span>
-          <span className="topbar__name">Контрольные работы</span>
+          <span className="topbar__name">Проверочные работы</span>
         </Link>
 
         {user !== null && (
           <nav className="topbar__nav">
             <Link className="topbar__link" to="/">
-              {user.role === 'admin' ? 'Контрольные' : 'Мои контрольные'}
+              {user.role === 'admin' ? 'Все работы' : 'Мои работы'}
             </Link>
             <Link className="topbar__link" to="/create">
               Создать
@@ -96,6 +97,9 @@ function TopBar() {
                 </Link>
                 <Link className="topbar__link" to="/admin/teachers">
                   Учителя
+                </Link>
+                <Link className="topbar__link" to="/admin/ai">
+                  ИИ
                 </Link>
                 <Link className="topbar__link" to="/admin/settings">
                   Настройки
@@ -179,6 +183,14 @@ export default function App() {
           element={
             <Protected adminOnly>
               <AdminStatsPage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/ai"
+          element={
+            <Protected adminOnly>
+              <AdminAiPage />
             </Protected>
           }
         />

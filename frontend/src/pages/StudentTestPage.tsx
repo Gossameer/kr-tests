@@ -26,7 +26,9 @@ import {
   saveAttempt,
   saveProgress,
 } from '../lib/attemptStorage'
+import { plural } from '../lib/checklist'
 import { getOrCreateSeed, shuffleWithSeed } from '../lib/shuffle'
+import { usePageTitle } from '../lib/usePageTitle'
 import type { PublicTask, PublicTestInfo, StartedAttempt, StoredAttempt } from '../types'
 
 type Phase = 'start' | 'solving' | 'done'
@@ -52,7 +54,11 @@ export default function StudentTestPage() {
   const [studentClass, setStudentClass] = useState(
     () => loadProgress(code)?.studentClass ?? '',
   )
+  // Ошибка от сервера (класс не из списка, работа уже сдана и т. п.).
   const [formError, setFormError] = useState('')
+  // Ошибки полей показываем после «Начать» или когда ученик ушёл из поля.
+  const [touchedName, setTouchedName] = useState(false)
+  const [touchedClass, setTouchedClass] = useState(false)
   const [starting, setStarting] = useState(false)
 
   // Ответы: выбранные варианты и введённый текст.
@@ -60,7 +66,11 @@ export default function StudentTestPage() {
   const [inputs, setInputs] = useState<Record<number, string>>({})
 
   const [submitting, setSubmitting] = useState(false)
+  // Подсветить задания без ответа — после перехода к ним из списка.
+  const [showUnanswered, setShowUnanswered] = useState(false)
   const [submitError, setSubmitError] = useState('')
+
+  usePageTitle(loading.kind === 'ready' ? loading.info.title : 'Проверочная работа')
 
   useEffect(() => {
     fetchPublicTest(code)
@@ -68,7 +78,7 @@ export default function StudentTestPage() {
       .catch((error: unknown) =>
         setLoading({
           kind: 'error',
-          message: error instanceof Error ? error.message : 'Не удалось загрузить контрольную',
+          message: error instanceof Error ? error.message : 'Не удалось открыть работу. Обновите страницу.',
         }),
       )
   }, [code])
@@ -93,13 +103,25 @@ export default function StudentTestPage() {
     }))
   }, [attempt, code])
 
+  const nameError =
+    studentName.trim() === ''
+      ? 'Введите фамилию и имя, например: Иванов Иван.'
+      : studentName.trim().split(/\s+/).length < 2
+        ? 'Нужны и фамилия, и имя — через пробел, например: Иванов Иван.'
+        : ''
+  const classError = studentClass.trim() === '' ? 'Выберите свой класс из списка.' : ''
+  const shownNameError = touchedName ? nameError : ''
+  const shownClassError = touchedClass ? classError : ''
+
   async function handleStart() {
-    if (!studentName.trim()) {
-      setFormError('Введите фамилию и имя.')
+    setTouchedName(true)
+    setTouchedClass(true)
+    if (nameError) {
+      document.getElementById('student-name')?.focus()
       return
     }
-    if (!studentClass.trim()) {
-      setFormError('Выберите класс.')
+    if (classError) {
+      document.getElementById('student-class')?.focus()
       return
     }
 
@@ -134,23 +156,45 @@ export default function StudentTestPage() {
     setInputs((previous) => ({ ...previous, [taskId]: value }))
   }
 
-  /** Сколько заданий уже отвечено: выбран вариант или введён непустой текст. */
-  const answeredCount = tasks.filter(
-    (task) =>
-      (task.answer_format === 'choice' && choices[task.id] !== undefined) ||
-      (task.answer_format === 'input' && (inputs[task.id] ?? '').trim() !== ''),
-  ).length
+  /** Отвечено ли задание: выбран вариант или введён непустой текст. */
+  function isAnswered(task: PublicTask): boolean {
+    return task.answer_format === 'choice'
+      ? choices[task.id] !== undefined
+      : (inputs[task.id] ?? '').trim() !== ''
+  }
+
+  const answeredCount = tasks.filter(isAnswered).length
+  /** Номера (как на экране) заданий без ответа. */
+  const unanswered = tasks
+    .map((task, index) => ({ task, number: index + 1 }))
+    .filter(({ task }) => !isAnswered(task))
+
+  /** Прокручивает к заданию и ставит фокус в поле ответа. */
+  function goToTask(taskId: number) {
+    const block = document.getElementById(`task-block-${taskId}`)
+    block?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const field =
+      document.getElementById(`answer-${taskId}`) ??
+      block?.querySelector<HTMLInputElement>('input[type="radio"]')
+    field?.focus({ preventScroll: true })
+  }
 
   async function handleSubmit() {
     if (attempt === null) {
       return
     }
 
-    const confirmed = window.confirm(
-      `Вы ответили на ${answeredCount} из ${tasks.length}. Сдать?`,
-    )
-    if (!confirmed) {
-      return
+    // Всё отвечено — не переспрашиваем. Иначе честно говорим, каких номеров нет.
+    if (unanswered.length > 0) {
+      const numbers = unanswered.map((item) => item.number).join(', ')
+      const confirmed = window.confirm(
+        `Без ответа ${unanswered.length} ${plural(unanswered.length, 'задание', 'задания', 'заданий')}: ` +
+          `№ ${numbers}. Они будут засчитаны как невыполненные.\n\nСдать работу сейчас?`,
+      )
+      if (!confirmed) {
+        goToTask(unanswered[0].task.id)
+        return
+      }
     }
 
     setSubmitting(true)
@@ -190,7 +234,11 @@ export default function StudentTestPage() {
       setStored(saved)
       setPhase('done')
     } catch (error: unknown) {
-      setSubmitError(error instanceof Error ? error.message : 'Не удалось сдать работу')
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : 'Не удалось сдать работу. Ответы сохранены на странице — нажмите «Сдать работу» ещё раз.',
+      )
     } finally {
       setSubmitting(false)
     }
@@ -244,7 +292,7 @@ export default function StudentTestPage() {
   if (loading.kind === 'loading') {
     return (
       <main className="page page--student">
-        <p className="loading">Загружаем контрольную…</p>
+        <p className="loading">Загружаем работу…</p>
       </main>
     )
   }
@@ -256,7 +304,7 @@ export default function StudentTestPage() {
 
     return (
       <main className="page page--student">
-        <h1>Контрольная не открылась</h1>
+        <h1>Работа не открылась</h1>
         <section className="alert alert--error">
           <p>{loading.message}</p>
         </section>
@@ -276,7 +324,7 @@ export default function StudentTestPage() {
         <h1>{info.title}</h1>
         <section className="card">
           <h2>Приём работ закрыт</h2>
-          <p>Учитель больше не принимает ответы по этой контрольной.</p>
+          <p>Учитель больше не принимает ответы по этой работе.</p>
           <p className="muted">
             Если вы должны были её сдать, подойдите к учителю: {info.teacher_name}.
           </p>
@@ -286,14 +334,14 @@ export default function StudentTestPage() {
   }
 
   // ------------------------------------------------------------------
-  // У контрольной не указаны классы — пройти её нельзя
+  // У проверочной работы не указаны классы — пройти её нельзя
   // ------------------------------------------------------------------
   if (info.classes.length === 0 && phase === 'start') {
     return (
       <main className="page page--student">
         <h1>{info.title}</h1>
         <section className="card">
-          <h2>Эту контрольную пока нельзя пройти</h2>
+          <h2>Эту работу пока нельзя пройти</h2>
           <p>В ней не указаны классы, поэтому отметить свой класс не получится.</p>
           <p className="muted">Сообщите учителю: {info.teacher_name}.</p>
         </section>
@@ -318,21 +366,39 @@ export default function StudentTestPage() {
           </label>
           <input
             id="student-name"
-            className="input"
+            className={'input' + (shownNameError ? ' input--invalid' : '')}
             value={studentName}
             onChange={(event) => setStudentName(event.target.value)}
-            placeholder="Иванов Иван"
+            onBlur={() => setTouchedName(true)}
+            placeholder="Например: Иванов Иван"
             autoComplete="name"
+            aria-invalid={shownNameError !== ''}
+            aria-describedby="student-name-hint"
           />
+          {shownNameError ? (
+            <p className="field-error" id="student-name-hint">
+              {shownNameError}
+            </p>
+          ) : (
+            <p className="hint" id="student-name-hint">
+              Как в журнале: сначала фамилия, потом имя.
+            </p>
+          )}
 
           <label className="label label--spaced" htmlFor="student-class">
             Класс
           </label>
           <select
             id="student-class"
-            className="input select"
+            className={'input select' + (shownClassError ? ' input--invalid' : '')}
             value={studentClass}
-            onChange={(event) => setStudentClass(event.target.value)}
+            onChange={(event) => {
+              setStudentClass(event.target.value)
+              setTouchedClass(true)
+            }}
+            onBlur={() => setTouchedClass(true)}
+            aria-invalid={shownClassError !== ''}
+            aria-describedby="student-class-hint"
           >
             <option value="">— выберите класс —</option>
             {info.classes.map((className) => (
@@ -341,8 +407,21 @@ export default function StudentTestPage() {
               </option>
             ))}
           </select>
+          {shownClassError ? (
+            <p className="field-error" id="student-class-hint">
+              {shownClassError}
+            </p>
+          ) : (
+            <p className="hint" id="student-class-hint">
+              Нажмите на поле и выберите свой класс.
+            </p>
+          )}
 
-          {formError !== '' && <p className="field-error">{formError}</p>}
+          {formError !== '' && (
+            <div className="alert alert--error">
+              <p>{formError}</p>
+            </div>
+          )}
 
           <div className="row">
             <button
@@ -356,7 +435,8 @@ export default function StudentTestPage() {
           </div>
 
           <p className="hint">
-            Вариант выдаётся автоматически. Если вы уже начинали — продолжите свой.
+            Вариант выдаётся автоматически. Если вы уже начинали — введите те же фамилию,
+            имя и класс, и откроется ваш вариант.
           </p>
         </section>
       </main>
@@ -389,10 +469,17 @@ export default function StudentTestPage() {
 
       <ol className="questions">
         {tasks.map((task, index) => (
-          <li key={task.id} className="question">
+          <li
+            key={task.id}
+            id={`task-block-${task.id}`}
+            className={'question' + (showUnanswered && !isAnswered(task) ? ' question--missing' : '')}
+          >
             <p className="question__text">
               {index + 1}. {task.text}
             </p>
+            {task.answer_format === 'choice' && (
+              <p className="hint">Выберите один вариант ответа.</p>
+            )}
 
             {task.answer_format === 'choice' ? (
               <ul className="options">
@@ -429,11 +516,44 @@ export default function StudentTestPage() {
                   placeholder="Введите ответ"
                   autoComplete="off"
                 />
+                <p className="hint">Только ответ — число или слово, без решения.</p>
               </div>
             )}
           </li>
         ))}
       </ol>
+
+      {unanswered.length > 0 ? (
+        <section className="todo todo--soft">
+          <h2 className="todo__title">
+            Без ответа: {unanswered.length}{' '}
+            {plural(unanswered.length, 'задание', 'задания', 'заданий')}
+          </h2>
+          <p className="todo__links">
+            {unanswered.map(({ task, number }) => (
+              <button
+                key={task.id}
+                type="button"
+                className="todo__item"
+                onClick={() => {
+                  setShowUnanswered(true)
+                  goToTask(task.id)
+                }}
+              >
+                № {number}
+              </button>
+            ))}
+          </p>
+          <p className="hint">
+            Нажмите на номер, чтобы перейти к заданию. Можно сдать и без ответа — тогда
+            задание не засчитается.
+          </p>
+        </section>
+      ) : (
+        tasks.length > 0 && (
+          <p className="ready">Вы ответили на все задания. Проверьте ответы и нажмите «Сдать работу».</p>
+        )
+      )}
 
       {submitError !== '' && (
         <section className="alert alert--error">
@@ -452,9 +572,6 @@ export default function StudentTestPage() {
         </button>
       </div>
 
-      <p className="muted">
-        Можно оставить задание без ответа — оно будет считаться невыполненным.
-      </p>
     </main>
   )
 }

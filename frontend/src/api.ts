@@ -4,6 +4,9 @@
  */
 
 import type {
+  AdminAiOverview,
+  AiJob,
+  AiStatus,
   AttemptDetail,
   AttemptResult,
   CreatedTest,
@@ -16,6 +19,7 @@ import type {
   StartedAttempt,
   SubmitPayload,
   TeacherRow,
+  SkillDraft,
   TestCreatePayload,
   User,
 } from './types'
@@ -31,10 +35,36 @@ export type HealthResponse = {
 }
 
 /** Сообщение, когда браузер вообще не смог достучаться до сервера. */
-export const NETWORK_ERROR = 'Нет связи с сервером, обновите страницу.'
+export const NETWORK_ERROR =
+  'Нет связи с сервером. Проверьте интернет и обновите страницу — введённое не пропадёт.'
 
 /** Сообщение, когда сервер ответил, но упал внутри себя. */
-export const SERVER_ERROR = 'Ошибка на сервере, сообщите учителю.'
+export const SERVER_ERROR =
+  'На сервере что-то сломалось. Подождите минуту и попробуйте ещё раз.'
+
+/**
+ * Понятный текст по коду ответа — когда сервер не прислал своего описания.
+ * Без номеров и технических слов: человеку важно, что делать дальше.
+ */
+function messageForStatus(status: number): string {
+  if (status >= 500) {
+    return SERVER_ERROR
+  }
+  switch (status) {
+    case 401:
+      return 'Войдите в систему заново — сессия закончилась.'
+    case 403:
+      return 'У вас нет доступа к этой странице.'
+    case 404:
+      return 'Ничего не нашлось. Проверьте ссылку или вернитесь на главную.'
+    case 413:
+      return 'Слишком много данных за раз. Уменьшите число заданий или вариантов.'
+    case 429:
+      return 'Слишком много попыток подряд. Подождите минуту и попробуйте снова.'
+    default:
+      return 'Не получилось. Обновите страницу и попробуйте ещё раз.'
+  }
+}
 
 /**
  * Выполняет запрос и превращает любые сбои в понятный русский текст.
@@ -71,11 +101,7 @@ async function extractError(response: Response): Promise<string> {
     // тело ответа не JSON — например, голое «Internal Server Error»
   }
 
-  if (response.status >= 500) {
-    return SERVER_ERROR
-  }
-
-  return `Сервер ответил ошибкой ${response.status}. Попробуйте обновить страницу.`
+  return messageForStatus(response.status)
 }
 
 /** Общий разбор ответа: либо данные, либо понятная ошибка. */
@@ -92,7 +118,7 @@ export async function fetchHealth(): Promise<HealthResponse> {
 
 /* ===================== Учитель: создание ===================== */
 
-/** POST /api/tests — публикует контрольную и возвращает обе ссылки. */
+/** POST /api/tests — публикует проверочную работу и возвращает обе ссылки. */
 export async function createTest(payload: TestCreatePayload): Promise<CreatedTest> {
   const response = await request(`${API_URL}/api/tests`, {
     method: 'POST',
@@ -104,7 +130,7 @@ export async function createTest(payload: TestCreatePayload): Promise<CreatedTes
 
 /* ===================== Ученик ===================== */
 
-/** GET /api/public/tests/{code} — шапка контрольной до нажатия «Начать». */
+/** GET /api/public/tests/{code} — шапка проверочной работы до нажатия «Начать». */
 export async function fetchPublicTest(code: string): Promise<PublicTestInfo> {
   const response = await request(`${API_URL}/api/public/tests/${encodeURIComponent(code)}`)
   return parse<PublicTestInfo>(response)
@@ -195,7 +221,7 @@ export async function deleteAttempt(testId: number, attemptId: number): Promise<
 }
 
 /**
- * DELETE /api/tests/{id} — удалить контрольную целиком.
+ * DELETE /api/tests/{id} — удалить проверочную работу целиком.
  * confirmTitle сверяет сам сервер, поэтому случайно удалить нельзя.
  */
 export async function deleteTest(testId: number, confirmTitle: string): Promise<void> {
@@ -251,7 +277,7 @@ export async function logout(): Promise<void> {
   }
 }
 
-/** GET /api/my/tests — список своих контрольных (у админа — всех). */
+/** GET /api/my/tests — список своих проверочных работ (у админа — всех). */
 export async function fetchMyTests(): Promise<MyTest[]> {
   const response = await request(`${API_URL}/api/my/tests`)
   return parse<MyTest[]>(response)
@@ -309,4 +335,106 @@ export async function fetchSchoolStats(filters: {
 
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return parse<SchoolStats>(await request(`${API_URL}/api/admin/stats${suffix}`))
+}
+
+/* ===================== Генерация через ИИ ===================== */
+
+/** Что нужно ИИ, кроме умений: предмет, тема, класс. */
+export type AiContext = {
+  subject: string
+  topic: string
+  grade: string
+  skills: SkillDraft[]
+}
+
+function aiSkills(skills: SkillDraft[]) {
+  return skills.map((skill) => ({
+    title: skill.title.trim(),
+    tasks_per_variant: skill.tasksPerVariant,
+    answer_format: skill.answerFormat,
+  }))
+}
+
+/** GET /api/ai/status — включена ли генерация и сколько осталось на сегодня. */
+export async function fetchAiStatus(): Promise<AiStatus> {
+  return parse<AiStatus>(await request(`${API_URL}/api/ai/status`))
+}
+
+/** POST /api/ai/jobs — запустить генерацию всех вариантов в фоне. */
+export async function startAiJob(
+  context: AiContext,
+  variantsCount: number,
+): Promise<{ job_id: number }> {
+  const response = await request(`${API_URL}/api/ai/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      subject: context.subject,
+      topic: context.topic,
+      grade: context.grade,
+      skills: aiSkills(context.skills),
+      variants_count: variantsCount,
+    }),
+  })
+  return parse<{ job_id: number }>(response)
+}
+
+/** GET /api/ai/jobs/{id} — прогресс и результат. */
+export async function fetchAiJob(jobId: number): Promise<AiJob> {
+  return parse<AiJob>(await request(`${API_URL}/api/ai/jobs/${jobId}`))
+}
+
+/** POST /api/ai/jobs/{id}/variants/{no}/retry — повторить неудавшийся вариант. */
+export async function retryAiVariant(jobId: number, variantNo: number): Promise<void> {
+  const response = await request(
+    `${API_URL}/api/ai/jobs/${jobId}/variants/${variantNo}/retry`,
+    { method: 'POST' },
+  )
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
+}
+
+/** POST /api/ai/task-jobs — перегенерировать одно задание (тоже в фоне). */
+export async function startAiTaskJob(
+  context: AiContext,
+  params: {
+    skillIndex: number
+    variantNo: number
+    variantsCount: number
+    currentText: string
+    avoidTexts: string[]
+  },
+): Promise<{ job_id: number }> {
+  const response = await request(`${API_URL}/api/ai/task-jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      subject: context.subject,
+      topic: context.topic,
+      grade: context.grade,
+      skills: aiSkills(context.skills),
+      skill_index: params.skillIndex,
+      variant_no: params.variantNo,
+      variants_count: params.variantsCount,
+      current_text: params.currentText,
+      avoid_texts: params.avoidTexts,
+    }),
+  })
+  return parse<{ job_id: number }>(response)
+}
+
+/** GET /api/admin/ai — расход ИИ и лимит. */
+export async function fetchAdminAi(): Promise<AdminAiOverview> {
+  return parse<AdminAiOverview>(await request(`${API_URL}/api/admin/ai`))
+}
+
+/** PUT /api/admin/ai — сменить дневной лимит генераций на учителя. */
+export async function updateAiLimit(dailyLimit: number): Promise<{ daily_limit: number }> {
+  const response = await request(`${API_URL}/api/admin/ai`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ daily_limit: dailyLimit }),
+  })
+  return parse<{ daily_limit: number }>(response)
 }

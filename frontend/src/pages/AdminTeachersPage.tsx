@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchTeachers, resetTeacherPassword, setTeacherActive } from '../api'
 import { useAuth } from '../lib/authContext'
 import type { PasswordReset, TeacherRow } from '../types'
+import { usePageTitle } from '../lib/usePageTitle'
 
 type Loading =
   | { kind: 'loading' }
@@ -26,6 +27,7 @@ function formatDate(value: string | null): string {
 }
 
 export default function AdminTeachersPage() {
+  usePageTitle('Учителя')
   const { user } = useAuth()
   const [loading, setLoading] = useState<Loading>({ kind: 'loading' })
   const [actionError, setActionError] = useState('')
@@ -51,7 +53,7 @@ export default function AdminTeachersPage() {
     const confirmed = window.confirm(
       `${action} учётную запись «${teacher.full_name}»?\n\n` +
         (teacher.is_active
-          ? 'Человек не сможет войти, но его контрольные и результаты сохранятся.'
+          ? 'Человек не сможет войти, но его проверочные работы и результаты сохранятся.'
           : 'Человек снова сможет входить в сервис.'),
     )
     if (!confirmed) {
@@ -139,7 +141,7 @@ export default function AdminTeachersPage() {
                   <th>Роль</th>
                   <th>Регистрация</th>
                   <th>Последний вход</th>
-                  <th>Контрольных</th>
+                  <th>Работ</th>
                   <th>Работ</th>
                   <th>Доступ</th>
                   <th />

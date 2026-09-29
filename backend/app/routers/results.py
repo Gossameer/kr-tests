@@ -1,15 +1,15 @@
 """
-Роутер результатов — то, что видит УЧИТЕЛЬ по своей контрольной.
+Роутер результатов — то, что видит УЧИТЕЛЬ по своей проверочной работе.
 
     GET    /api/tests/{id}/results                — таблица учеников и умений
     GET    /api/tests/{id}/attempts/{attempt_id}  — разбор одной работы
     GET    /api/tests/{id}/export.xlsx            — выгрузка в Excel (3 листа)
     PATCH  /api/tests/{id}                        — открыть/закрыть приём работ
     DELETE /api/tests/{id}/attempts/{attempt_id}  — удалить работу (разрешить пересдачу)
-    DELETE /api/tests/{id}?confirm_title=...      — удалить контрольную целиком
+    DELETE /api/tests/{id}?confirm_title=...      — удалить проверочную работу целиком
 
-Доступ даёт учётная запись: владелец контрольной или администратор. Секретных
-ссылок больше нет — чужую контрольную не открыть, даже зная её номер.
+Доступ даёт учётная запись: владелец проверочной работы или администратор. Секретных
+ссылок больше нет — чужую проверочную работу не открыть, даже зная её номер.
 """
 
 import io
@@ -46,15 +46,15 @@ FILL_HIGH = PatternFill("solid", fgColor="CDEBD3")
 def db_unavailable() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="База данных недоступна. Проверьте, что PostgreSQL запущен.",
+        detail="Сервис временно недоступен. Подождите минуту и обновите страницу.",
     )
 
 
 def test_not_found() -> HTTPException:
-    """404 на несуществующую контрольную."""
+    """404 на несуществующую проверочную работу."""
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail="Контрольная не найдена.",
+        detail="Проверочная работа не найдена. Возможно, её удалили — вернитесь к списку работ.",
     )
 
 
@@ -76,9 +76,9 @@ def fill_for(percent: int) -> PatternFill:
 
 def load_test_for_user(conn, test_id: int, user: dict) -> dict:
     """
-    Находит контрольную и проверяет права на неё.
+    Находит проверочную работу и проверяет права на неё.
 
-    Чужая контрольная даёт 403, а не 404: скрывать сам факт её существования
+    Чужая проверочная работа даёт 403, а не 404: скрывать сам факт её существования
     не от кого — все учителя школы и так видят друг друга.
     """
     row = conn.execute(
@@ -95,7 +95,7 @@ def load_test_for_user(conn, test_id: int, user: dict) -> dict:
         raise test_not_found()
 
     if not can_manage_test(user, row):
-        raise forbidden("Это контрольная другого учителя.")
+        raise forbidden("Это проверочная работа другого учителя — открыть её может только автор.")
 
     return row
 
@@ -336,7 +336,7 @@ def get_attempt_detail(
         test_row = load_test_for_user(conn, test_id, user)
 
         # test_id в условии обязателен: иначе по одному токену можно было бы
-        # листать работы из чужих контрольных, подставляя id.
+        # листать работы из чужих проверочных работ, подставляя id.
         attempt_row = conn.execute(
             """
             SELECT id, student_name, student_class, variant_no,
@@ -350,7 +350,7 @@ def get_attempt_detail(
         if attempt_row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Такая работа в этой контрольной не найдена.",
+                detail="Ответ этого ученика не найден — возможно, его уже удалили. Обновите страницу.",
             )
 
         items = load_attempt_items(
@@ -564,7 +564,7 @@ def export_results(
 
 
 # =====================================================================
-# Управление контрольной (всё — по той же секретной ссылке)
+# Управление проверочной работой (всё — по той же секретной ссылке)
 # =====================================================================
 
 
@@ -629,7 +629,7 @@ def delete_attempt(
         if deleted is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Такая работа в этой контрольной не найдена.",
+                detail="Ответ этого ученика не найден — возможно, его уже удалили. Обновите страницу.",
             )
 
     logger.info("Удалена работа %s из теста %s", attempt_id, test_row["share_token"])
@@ -639,17 +639,17 @@ def delete_attempt(
 @router.delete(
     "/{test_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Удалить контрольную вместе со всеми работами",
+    summary="Удалить проверочную работу вместе с ответами учеников",
 )
 def delete_test(
     test_id: int = Path(ge=1),
     user: dict = Depends(require_user),
     confirm_title: str = Query(
-        description="Точное название контрольной — подтверждение удаления",
+        description="Точное название проверочной работы — подтверждение удаления",
     ),
 ) -> Response:
     """
-    Удаляет контрольную со всеми умениями, заданиями и работами. Необратимо.
+    Удаляет проверочную работу со всеми умениями, заданиями и работами. Необратимо.
 
     Защита двойная: подтверждение в браузере И название, которое сверяет сервер.
     """
@@ -666,12 +666,12 @@ def delete_test(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "Название не совпадает — контрольная не удалена. "
+                    "Название не совпадает — работа не удалена. "
                     "Введите название точно так, как оно указано в заголовке."
                 ),
             )
 
         conn.execute("DELETE FROM tests WHERE id = %s", (test_row["id"],))
 
-    logger.info("Удалена контрольная %s («%s»)", test_row["share_token"], test_row["title"])
+    logger.info("Удалена проверочная работа %s («%s»)", test_row["share_token"], test_row["title"])
     return Response(status_code=status.HTTP_204_NO_CONTENT)

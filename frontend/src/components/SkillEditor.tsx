@@ -1,18 +1,21 @@
 /**
  * Редактор списка умений.
  *
- * Умение — это то, что проверяет контрольная («Находить дискриминант»).
+ * Умение — это то, что проверяет проверочная работа («Находить дискриминант»).
  * У каждого умения свои число заданий в варианте и формат ответа.
  *
  * Компонент ничего не хранит сам: список лежит в состоянии страницы и приходит
  * сюда через props вместе с функцией onChange.
  */
 
+import { useState } from 'react'
 import type { AnswerFormat, SkillDraft } from '../types'
 
 type Props = {
   skills: SkillDraft[]
   onChange: (skills: SkillDraft[]) => void
+  /** Учитель уже нажимал «Опубликовать» — подсвечиваем все пустые названия. */
+  showErrors?: boolean
 }
 
 /** Заготовка нового умения: одно задание, ввод ответа. */
@@ -20,7 +23,15 @@ function emptySkill(): SkillDraft {
   return { title: '', tasksPerVariant: 1, answerFormat: 'input' }
 }
 
-export default function SkillEditor({ skills, onChange }: Props) {
+export default function SkillEditor({ skills, onChange, showErrors = false }: Props) {
+  // Названия, из которых учитель уже ушёл: пустое поле краснеет только после этого,
+  // а не сразу, как только умение добавили.
+  const [left, setLeft] = useState<number[]>([])
+
+  function titleMissing(index: number): boolean {
+    return skills[index].title.trim() === '' && (showErrors || left.includes(index))
+  }
+
   function update(index: number, changes: Partial<SkillDraft>) {
     onChange(skills.map((skill, position) =>
       position === index ? { ...skill, ...changes } : skill,
@@ -32,6 +43,8 @@ export default function SkillEditor({ skills, onChange }: Props) {
   }
 
   function remove(index: number) {
+    // Номера умений сдвигаются — отметки «уже трогали» сбрасываем.
+    setLeft([])
     onChange(skills.filter((_, position) => position !== index))
   }
 
@@ -49,7 +62,8 @@ export default function SkillEditor({ skills, onChange }: Props) {
     <div className="editor">
       {skills.length === 0 && (
         <p className="empty">
-          Умений пока нет. Добавьте первое — например «Решать квадратные уравнения».
+          Умений пока нет. Нажмите «+ Добавить умение» и напишите, что должен уметь
+          ученик, — например «Решать квадратные уравнения».
         </p>
       )}
 
@@ -91,12 +105,29 @@ export default function SkillEditor({ skills, onChange }: Props) {
               </div>
             </div>
 
+            <label className="label" htmlFor={`skill-title-${index}`}>
+              Что должен уметь ученик
+            </label>
             <input
-              className="input"
+              id={`skill-title-${index}`}
+              className={'input' + (titleMissing(index) ? ' input--invalid' : '')}
               value={skill.title}
               onChange={(event) => update(index, { title: event.target.value })}
-              placeholder="Что проверяем: например «Находить дискриминант»"
+              onBlur={() => setLeft((list) => (list.includes(index) ? list : [...list, index]))}
+              placeholder="Например: Складывать дроби с разными знаменателями"
+              aria-invalid={titleMissing(index)}
+              aria-describedby={`skill-title-${index}-hint`}
             />
+            {titleMissing(index) ? (
+              <p className="field-error" id={`skill-title-${index}-hint`}>
+                Назовите умение, например: «Сравнивать дроби».
+              </p>
+            ) : (
+              <p className="hint" id={`skill-title-${index}-hint`}>
+                Одно умение — одна строка в таблице результатов. Например: «Находить
+                процент от числа».
+              </p>
+            )}
 
             <div className="fields fields--inline">
               <div className="field field--narrow">
@@ -144,7 +175,7 @@ export default function SkillEditor({ skills, onChange }: Props) {
         ))}
       </ol>
 
-      <button type="button" className="btn btn--ghost" onClick={add}>
+      <button id="skill-add" type="button" className="btn btn--ghost" onClick={add}>
         + Добавить умение
       </button>
     </div>

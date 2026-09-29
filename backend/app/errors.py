@@ -27,11 +27,11 @@ FIELD_NAMES = {
     "answer_format": "формат ответа (answer_format)",
     "choices": "выбранные варианты (choices)",
     "inputs": "введённые ответы (inputs)",
-    "teacher_name": "имя учителя (teacher_name)",
-    "student_name": "фамилия и имя (student_name)",
-    "student_class": "класс (student_class)",
+    "teacher_name": "имя учителя",
+    "student_name": "фамилия и имя",
+    "student_class": "класс",
     "answers": "ответы (answers)",
-    "classes": "классы (classes)",
+    "classes": "классы",
     "shuffle": "перемешивание (shuffle)",
     "skills": "умения (skills)",
     "variants": "варианты (variants)",
@@ -78,7 +78,7 @@ def describe_location(loc: tuple) -> str:
         -> 'Вариант 2, задание 1, поле «номер правильного ответа (correct)»'
     ("body", "skills", 0, "title") -> 'Умение 1, поле «название (title)»'
     ("body", "title")              -> 'Поле «название (title)»'
-    ("body",)                      -> '' (ошибка относится ко всей контрольной)
+    ("body",)                      -> '' (ошибка относится ко всей проверочной работе)
     """
     # Первый элемент — всегда "body"/"query"/"path", он читателю не нужен.
     parts = [part for part in loc if part not in ("body", "query", "path")]

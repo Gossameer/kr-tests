@@ -45,9 +45,12 @@ def to_number(text: str) -> Decimal | None:
     и сравнение дробей стало бы ненадёжным.
     """
     try:
-        return Decimal(text)
+        number = Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+    # «nan», «inf», «snan» Decimal тоже читает, но это не числа-ответы, а
+    # сравнение с sNaN вообще бросает исключение — такие записи сравниваем как текст.
+    return number if number.is_finite() else None
 
 
 def answers_match(student_raw: str, accepted_raw: str) -> bool:

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchSchoolStats } from '../api'
 import type { SchoolStats } from '../types'
+import { usePageTitle } from '../lib/usePageTitle'
 
 type Loading =
   | { kind: 'loading' }
@@ -41,6 +42,7 @@ function formatDay(value: string): string {
 }
 
 export default function AdminStatsPage() {
+  usePageTitle('Статистика школы')
   const [days, setDays] = useState(30)
   const [subject, setSubject] = useState('')
   const [studentClass, setStudentClass] = useState('')
@@ -162,7 +164,7 @@ export default function AdminStatsPage() {
               </li>
               <li className="tile">
                 <span className="tile__value">{stats.totals.tests}</span>
-                <span className="tile__label">контрольных</span>
+                <span className="tile__label">проверочных работ</span>
               </li>
               <li className="tile">
                 <span className="tile__value">{stats.totals.attempts_week}</span>
@@ -199,7 +201,7 @@ export default function AdminStatsPage() {
                       <th>Предмет</th>
                       <th>Класс</th>
                       <th>Учитель</th>
-                      <th>Контрольная</th>
+                      <th>Работа</th>
                       <th>Ответов</th>
                     </tr>
                   </thead>
@@ -231,7 +233,7 @@ export default function AdminStatsPage() {
                 <thead>
                   <tr>
                     <th>Учитель</th>
-                    <th>Контрольных</th>
+                    <th>Работ</th>
                     <th>Работ</th>
                     <th>Средний %</th>
                   </tr>
@@ -261,7 +263,7 @@ export default function AdminStatsPage() {
               <div>
                 <h3>Предметы</h3>
                 {stats.by_subject.length === 0 ? (
-                  <p className="empty">Нет данных.</p>
+                  <p className="empty">Пока нет сданных работ — предметы появятся, когда ученики начнут сдавать.</p>
                 ) : (
                   <table className="table">
                     <tbody>
@@ -284,7 +286,7 @@ export default function AdminStatsPage() {
               <div>
                 <h3>Классы</h3>
                 {stats.by_class.length === 0 ? (
-                  <p className="empty">Нет данных.</p>
+                  <p className="empty">Пока нет сданных работ — классы появятся, когда ученики начнут сдавать.</p>
                 ) : (
                   <table className="table">
                     <tbody>

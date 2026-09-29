@@ -10,12 +10,20 @@
  *     вставляет ответ ИИ, чтобы заменить ЭТО задание.
  *
  * Без ИИ таблицу можно заполнить руками: пустые задания создаются заранее.
+ *
+ * После генерации через ИИ здесь же видно:
+ *   - задания, где ответ при генерации не совпал с самопроверкой, — жёлтой
+ *     рамкой, в подсказке оба ответа; сверху счётчик и фильтр «только они»;
+ *   - варианты, которые не удались, — с кнопкой «повторить».
  */
 
 import { useState } from 'react'
+import { countNeedsReview, needsReview, replaceTaskAt, reviewHint } from '../lib/aiJob'
+import type { TaskPlace } from '../lib/aiJob'
 import { buildReplacePrompt } from '../lib/aiPrompt'
 import type { PromptFields } from '../lib/aiPrompt'
-import { parseSingleTask } from '../lib/parseTestJson'
+import { cellId, retryId } from '../lib/checklist'
+import { parseSingleTask, taskProblem } from '../lib/parseTestJson'
 import type { SkillDraft, TaskDraft, VariantDraft } from '../types'
 
 type Props = {
@@ -23,28 +31,56 @@ type Props = {
   variants: VariantDraft[]
   promptFields: PromptFields
   onChange: (variants: VariantDraft[]) => void
+  /** Настроена ли генерация на сервере: без неё кнопку «Перегенерировать» не показываем. */
+  aiEnabled?: boolean
+  /** Перегенерировать одно задание на сервере. */
+  onRegenerate?: (place: TaskPlace) => Promise<void>
+  /** Повторить вариант, который не удался при генерации. */
+  onRetryVariant?: (variantNo: number) => Promise<void>
+  /** Учитель уже нажимал «Опубликовать» — показываем все ошибки, даже в нетронутых полях. */
+  showErrors?: boolean
 }
 
 /** Где именно лежит задание: вариант, умение и номер задания внутри умения. */
-type Place = { variantNo: number; skillIndex: number; order: number }
+type Place = TaskPlace
+
+/** Подпись состояния варианта в шапке таблицы. */
+const VARIANT_STATE: Record<string, string> = {
+  pending: 'в очереди',
+  running: 'составляется…',
+  failed: 'не удался',
+}
 
 /** Заполнено ли задание настолько, чтобы его можно было публиковать. */
 function isReady(task: TaskDraft): boolean {
-  if (task.text.trim() === '') {
-    return false
-  }
-  if (task.answerFormat === 'choice') {
-    const options = task.options.map((option) => option.trim()).filter(Boolean)
-    return options.length >= 2 && task.correct !== null
-  }
-  return task.acceptedAnswers.some((answer) => answer.trim() !== '')
+  // Те же правила, что в списке «Чтобы опубликовать, осталось»: ✓ в клетке
+  // и пункт списка не могут расходиться.
+  return taskProblem(task) === null
 }
 
-export default function TaskTable({ skills, variants, promptFields, onChange }: Props) {
+export default function TaskTable({
+  skills,
+  variants,
+  promptFields,
+  onChange,
+  aiEnabled = false,
+  onRegenerate,
+  onRetryVariant,
+  showErrors = false,
+}: Props) {
   const [place, setPlace] = useState<Place | null>(null)
   const [replaceRaw, setReplaceRaw] = useState('')
   const [replaceErrors, setReplaceErrors] = useState<string[]>([])
   const [promptCopied, setPromptCopied] = useState(false)
+  const [onlyReview, setOnlyReview] = useState(false)
+  // Какое задание сейчас перегенерируется (ключ места) и какие варианты повторяются.
+  const [regenerating, setRegenerating] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState<number[]>([])
+  const [aiProblem, setAiProblem] = useState('')
+
+  const reviewCount = countNeedsReview(variants)
+  // Фильтр имеет смысл, только пока есть что показывать.
+  const filtering = onlyReview && reviewCount > 0
 
   /** Задания одного варианта на одно умение, по порядку. */
   function tasksAt(variantNo: number, skillIndex: number): TaskDraft[] {
@@ -61,26 +97,42 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
 
   /** Заменяет одно задание новым значением, остальные оставляет как есть. */
   function updateTask(target: Place, changes: Partial<TaskDraft>) {
-    onChange(
-      variants.map((variant) => {
-        if (variant.variantNo !== target.variantNo) {
-          return variant
-        }
+    onChange(replaceTaskAt(variants, target, changes))
+  }
 
-        // Считаем, какой это по счёту задание нужного умения.
-        let seen = -1
-        return {
-          ...variant,
-          tasks: variant.tasks.map((task) => {
-            if (task.skillIndex !== target.skillIndex) {
-              return task
-            }
-            seen += 1
-            return seen === target.order ? { ...task, ...changes } : task
-          }),
-        }
-      }),
-    )
+  function placeKey(target: Place): string {
+    return `${target.variantNo}:${target.skillIndex}:${target.order}`
+  }
+
+  async function handleRegenerate() {
+    if (!place || !onRegenerate) {
+      return
+    }
+    const target = place
+    setRegenerating(placeKey(target))
+    setAiProblem('')
+    try {
+      await onRegenerate(target)
+    } catch (error: unknown) {
+      setAiProblem(error instanceof Error ? error.message : 'Не удалось сгенерировать задание.')
+    } finally {
+      setRegenerating(null)
+    }
+  }
+
+  async function handleRetry(variantNo: number) {
+    if (!onRetryVariant) {
+      return
+    }
+    setRetrying((list) => [...list, variantNo])
+    setAiProblem('')
+    try {
+      await onRetryVariant(variantNo)
+    } catch (error: unknown) {
+      setAiProblem(error instanceof Error ? error.message : 'Не удалось повторить вариант.')
+    } finally {
+      setRetrying((list) => list.filter((item) => item !== variantNo))
+    }
   }
 
   const selected = place ? taskAt(place) : null
@@ -121,13 +173,46 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
       correct: result.task.correct,
       acceptedAnswers: result.task.acceptedAnswers,
       solution: result.task.solution,
+      // Задание новое — прежняя отметка о расхождении к нему не относится.
+      review: null,
     })
     setReplaceRaw('')
     setReplaceErrors([])
   }
 
+  const selectedBusy = place !== null && regenerating === placeKey(place)
+
+  // Что не так с открытым заданием. Про пустой текст говорим только после
+  // «Опубликовать» (иначе новое пустое задание сразу краснеет), а про ответ —
+  // как только учитель начал заполнять задание.
+  const problem = selected ? taskProblem(selected) : null
+  const shownProblem =
+    problem !== null && (showErrors || (problem.field !== 'text' && selected?.text.trim() !== ''))
+      ? problem
+      : null
+
   return (
     <div className="tasktable">
+      {/* ------------------------- Требуют проверки ------------------------- */}
+      {reviewCount > 0 && (
+        <div className="reviewbar">
+          <span className="reviewbar__count">Требуют проверки: {reviewCount}</span>
+          <label className="check check--inline">
+            <input
+              type="checkbox"
+              checked={onlyReview}
+              onChange={(event) => setOnlyReview(event.target.checked)}
+            />
+            <span>показать только их</span>
+          </label>
+          <span className="hint">
+            ИИ решил эти задания заново и получил другой ответ — сверьте ответ и решение.
+          </span>
+        </div>
+      )}
+
+      {aiProblem !== '' && <p className="field-error">{aiProblem}</p>}
+
       {/* ------------------------- Таблица ------------------------- */}
       <div className="table-scroll">
         <table className="table matrix">
@@ -135,13 +220,49 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
             <tr>
               <th>Умение</th>
               {variants.map((variant) => (
-                <th key={variant.variantNo}>Вариант {variant.variantNo}</th>
+                <th key={variant.variantNo}>
+                  Вариант {variant.variantNo}
+                  {variant.aiStatus && variant.aiStatus !== 'ok' && (
+                    <span
+                      className={
+                        'varstate' + (variant.aiStatus === 'failed' ? ' varstate--failed' : '')
+                      }
+                    >
+                      {VARIANT_STATE[variant.aiStatus]}
+                    </span>
+                  )}
+                  {variant.aiStatus === 'failed' && onRetryVariant && (
+                    <button
+                      id={retryId(variant.variantNo)}
+                      type="button"
+                      className="btn btn--small btn--ghost varstate__retry"
+                      onClick={() => void handleRetry(variant.variantNo)}
+                      disabled={retrying.includes(variant.variantNo)}
+                    >
+                      {retrying.includes(variant.variantNo) ? '…' : 'повторить'}
+                    </button>
+                  )}
+                  {variant.aiStatus === 'failed' && variant.aiError && (
+                    // Причина бывает длинной — показываем начало, целиком — в подсказке.
+                    <span className="varstate__error" title={variant.aiError}>
+                      {variant.aiError.length > 60
+                        ? `${variant.aiError.slice(0, 57)}…`
+                        : variant.aiError}
+                    </span>
+                  )}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {skills.map((skill, skillPosition) => {
               const skillIndex = skillPosition + 1
+              const hasReview = variants.some((variant) =>
+                variant.tasks.some((task) => task.skillIndex === skillIndex && needsReview(task)),
+              )
+              if (filtering && !hasReview) {
+                return null
+              }
               return (
                 <tr key={skillIndex}>
                   <td className="matrix__skill">
@@ -166,14 +287,22 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
                               place?.skillIndex === skillIndex &&
                               place?.order === order
                             const ready = task ? isReady(task) : false
+                            const review = task ? needsReview(task) : false
+
+                            if (filtering && !review) {
+                              // Пустое место вместо клетки: строки не прыгают по высоте.
+                              return <span key={order} className="cell cell--hidden" />
+                            }
 
                             return (
                               <button
                                 key={order}
+                                id={cellId(variant.variantNo, skillIndex, order)}
                                 type="button"
                                 className={
                                   'cell' +
                                   (ready ? ' cell--ready' : ' cell--empty') +
+                                  (review ? ' cell--review' : '') +
                                   (active ? ' cell--active' : '')
                                 }
                                 onClick={() => {
@@ -185,9 +314,13 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
                                   setReplaceRaw('')
                                   setReplaceErrors([])
                                 }}
-                                title={task?.text || 'Задание не заполнено'}
+                                title={
+                                  task && review
+                                    ? `${task.text}\n${reviewHint(task)}`
+                                    : task?.text || 'Задание не заполнено'
+                                }
                               >
-                                {ready ? '✓' : '—'}
+                                {review ? '!' : ready ? '✓' : '—'}
                                 <span className="cell__text">
                                   {task?.text.slice(0, 28) || 'пусто'}
                                 </span>
@@ -207,7 +340,8 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
 
       <p className="hint">
         Нажмите на клетку, чтобы посмотреть и поправить задание. ✓ — задание готово,
-        — — не хватает текста или ответа.
+        — — не хватает текста или ответа
+        {reviewCount > 0 && <>, ! — ответ не подтвердился при самопроверке ИИ</>}.
       </p>
 
       {/* ------------------------- Правка задания ------------------------- */}
@@ -223,26 +357,65 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
             </button>
           </div>
 
+          {selected.review && (
+            <div className="reviewnote">
+              <p>
+                {selected.review.status === 'unchecked'
+                  ? 'Самопроверка не выполнилась — сверьте ответ сами.'
+                  : 'ИИ решил задание заново и получил другой ответ.'}
+              </p>
+              <p>
+                При генерации: <b>{selected.review.generated}</b> · при проверке:{' '}
+                <b>{selected.review.checked}</b>
+              </p>
+              <button
+                type="button"
+                className="btn btn--small btn--ghost"
+                onClick={() => updateTask(place, { review: null })}
+              >
+                Ответ верный — снять отметку
+              </button>
+            </div>
+          )}
+
           <label className="label label--spaced" htmlFor="task-text">
             Текст задания
           </label>
           <textarea
             id="task-text"
-            className="textarea textarea--question"
+            className={
+              'textarea textarea--question' +
+              (shownProblem?.field === 'text' ? ' input--invalid' : '')
+            }
             value={selected.text}
             onChange={(event) => updateTask(place, { text: event.target.value })}
             rows={3}
-            placeholder="Например: Найдите дискриминант уравнения x² − 4x + 3 = 0"
+            placeholder="Например: Найдите 3/5 от 20"
+            aria-invalid={shownProblem?.field === 'text'}
+            aria-describedby="task-text-hint"
           />
+          {shownProblem?.field === 'text' ? (
+            <p className="field-error" id="task-text-hint">
+              {shownProblem.message}
+            </p>
+          ) : (
+            <p className="hint" id="task-text-hint">
+              Так задание увидит ученик. Знаки — по-школьному: 3 · 4, 12 : 3, дробь 3/5.
+            </p>
+          )}
 
           {selected.answerFormat === 'choice' ? (
             <>
-              <p className="label label--spaced">Варианты ответа (отметьте верный)</p>
+              <p className="label label--spaced">Варианты ответа</p>
+              <p className="hint">
+                Впишите варианты и отметьте кружком правильный.
+              </p>
               <ul className="editor__options">
                 {selected.options.map((option, optionIndex) => (
                   <li key={optionIndex} className="optrow">
                     <label className="optrow__radio" title="Это правильный вариант">
                       <input
+                        id={`task-correct-${optionIndex}`}
                         type="radio"
                         name="task-correct"
                         checked={selected.correct === optionIndex}
@@ -253,7 +426,14 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
                       </span>
                     </label>
                     <input
-                      className="input"
+                      id={`task-option-${optionIndex}`}
+                      className={
+                        'input' +
+                        (shownProblem?.field === 'options' && option.trim() === ''
+                          ? ' input--invalid'
+                          : '')
+                      }
+                      aria-label={`Вариант ответа ${'АБВГДЕЖЗИК'[optionIndex] ?? optionIndex + 1}`}
                       value={option}
                       onChange={(event) => {
                         const options = selected.options.map((item, index) =>
@@ -291,6 +471,9 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
                   </li>
                 ))}
               </ul>
+              {(shownProblem?.field === 'options' || shownProblem?.field === 'correct') && (
+                <p className="field-error">{shownProblem.message}</p>
+              )}
               <button
                 type="button"
                 className="btn btn--small btn--ghost"
@@ -307,7 +490,8 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
               </label>
               <input
                 id="task-answers"
-                className="input"
+                className={'input' + (shownProblem?.field === 'answers' ? ' input--invalid' : '')}
+                aria-invalid={shownProblem?.field === 'answers'}
                 value={selected.acceptedAnswers.join(' | ')}
                 onChange={(event) =>
                   updateTask(place, {
@@ -315,12 +499,15 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
                     acceptedAnswers: event.target.value.split('|').map((item) => item.trim()),
                   })
                 }
-                placeholder="4"
+                placeholder="12"
               />
+              {shownProblem?.field === 'answers' && (
+                <p className="field-error">{shownProblem.message}</p>
+              )}
               <p className="hint">
-                Если правильных записей несколько, перечислите их через «|»: например
-                «0,5 | 1/2». Регистр, лишние пробелы, запятая вместо точки и «ё» вместо
-                «е» учитываются автоматически.
+                Что должен ввести ученик. Если правильных записей несколько, перечислите их
+                через «|»: например «0,5 | 1/2». Регистр, лишние пробелы, запятую вместо точки
+                и «ё» вместо «е» мы учтём сами.
               </p>
             </>
           )}
@@ -334,12 +521,26 @@ export default function TaskTable({ skills, variants, promptFields, onChange }: 
             value={selected.solution}
             onChange={(event) => updateTask(place, { solution: event.target.value })}
             rows={2}
-            placeholder="D = 16 − 12 = 4"
+            placeholder="20 : 5 · 3 = 12"
           />
+          <p className="hint">Необязательно. 1–2 строки, чтобы быстро сверить ответ.</p>
 
           {/* ------------------------- Замена через ИИ ------------------------- */}
           <div className="replace">
             <p className="label">Заменить это задание через ИИ</p>
+            {aiEnabled && onRegenerate && (
+              <div className="row row--tight">
+                <button
+                  type="button"
+                  className="btn btn--primary btn--small"
+                  onClick={() => void handleRegenerate()}
+                  disabled={regenerating !== null}
+                >
+                  {selectedBusy ? 'Генерируем…' : 'Перегенерировать'}
+                </button>
+                <span className="hint">то же умение и формат ответа, другие числа</span>
+              </div>
+            )}
             <div className="row row--tight">
               <button type="button" className="btn btn--ghost" onClick={handleCopyPrompt}>
                 Скопировать промт для замены

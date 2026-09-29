@@ -34,16 +34,16 @@ router = APIRouter(prefix="/api/public/tests", tags=["public"])
 def db_unavailable() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="База данных недоступна. Попробуйте открыть ссылку чуть позже.",
+        detail="Сервис временно недоступен. Подождите минуту и откройте ссылку ещё раз.",
     )
 
 
 def test_not_found(code: str) -> HTTPException:
-    """404 и для «нет такого кода», и для неопубликованной контрольной."""
+    """404 и для «нет такого кода», и для неопубликованной проверочной работы."""
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=(
-            f"Контрольная по ссылке «{code}» не найдена или ещё не опубликована. "
+            f"Проверочная работа по ссылке «{code}» не найдена или ещё не опубликована. "
             "Проверьте ссылку у учителя."
         ),
     )
@@ -58,7 +58,7 @@ def closed() -> HTTPException:
 
 def load_published_test(conn, code: str) -> dict:
     """
-    Находит опубликованную контрольную по коду или бросает 404.
+    Находит опубликованную проверочную работу по коду или бросает 404.
 
     Закрытый приём здесь НЕ отсекается: ученику нужно показать сообщение
     «приём работ закрыт», а не «страница не найдена».
@@ -127,7 +127,7 @@ def load_variant_tasks(conn, test_id: int, variant_no: int) -> list[dict]:
 @router.get(
     "/{code}",
     response_model=PublicTestInfo,
-    summary="Название и классы контрольной (экран «Начать»)",
+    summary="Название и классы проверочной работы (экран «Начать»)",
 )
 def get_public_test(
     code: str = Path(min_length=4, max_length=32, description="Код из ссылки"),
@@ -200,8 +200,8 @@ def start_attempt(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"Класс «{payload.student_class}» не входит в список этой "
-                    f"контрольной: {', '.join(allowed_classes)}."
+                    f"Класса «{payload.student_class}» нет в списке этой работы. "
+                    f"Выберите свой класс из списка: {', '.join(allowed_classes)}."
                 ),
             )
 

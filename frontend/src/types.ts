@@ -1,7 +1,7 @@
 /**
  * Типы данных, общие для всех файлов фронтенда.
  *
- * Модель: контрольная → умения (что проверяем) + варианты (1..N).
+ * Модель: проверочная работа → умения (что проверяем) + варианты (1..N).
  * Задание принадлежит варианту и умению, отвечать на него можно
  * вводом текста ('input') или выбором варианта ('choice').
  */
@@ -15,7 +15,7 @@ export const FORMAT_NAMES: Record<AnswerFormat, string> = {
   choice: 'выбор из вариантов',
 }
 
-/* ===================== Создание контрольной ===================== */
+/* ===================== Создание проверочной работы ===================== */
 
 /** Умение: что проверяет группа заданий. */
 export type SkillDraft = {
@@ -38,12 +38,29 @@ export type TaskDraft = {
   acceptedAnswers: string[]
   /** Краткое решение — видит только учитель. */
   solution: string
+  /**
+   * Итог самопроверки ИИ, если ответы генерации и проверки не совпали
+   * (или проверить не удалось). null/нет поля — вопросов к заданию нет.
+   */
+  review?: TaskReview | null
 }
 
-/** Один вариант контрольной. */
+/** Расхождение ответов: что ответил ИИ при генерации и при самопроверке. */
+export type TaskReview = {
+  status: 'mismatch' | 'unchecked'
+  generated: string
+  checked: string
+}
+
+/** Один вариант проверочной работы. */
 export type VariantDraft = {
   variantNo: number
   tasks: TaskDraft[]
+  /** Состояние варианта при генерации через ИИ (нет поля — вариант составлен вручную). */
+  aiStatus?: AiVariantStatus
+  aiError?: string
+  /** Какая версия результата ИИ уже перенесена в таблицу. */
+  aiVersion?: number
 }
 
 /** Тело POST /api/tests */
@@ -264,7 +281,7 @@ export type User = {
   last_login_at: string | null
 }
 
-/** Строка списка «Мои контрольные» — приходит с сервера, а не из браузера. */
+/** Строка списка «Мои проверочные работы» — приходит с сервера, а не из браузера. */
 export type MyTest = {
   id: number
   code: string
@@ -333,4 +350,88 @@ export type SchoolStats = {
   }[]
   by_day: { day: string; attempts_count: number }[]
   filters: { subjects: string[]; classes: string[]; weak_below: number }
+}
+
+/* ===================== Генерация через ИИ ===================== */
+
+/** Ответ GET /api/ai/status */
+export type AiStatus = {
+  enabled: boolean
+  daily_limit: number
+  used_today: number
+}
+
+export type AiVariantStatus = 'pending' | 'running' | 'ok' | 'failed'
+
+/** Задание из результата генерации (поля — как в TaskIn на бэкенде). */
+export type AiTask = {
+  skill_index: number
+  text: string
+  answer_format: AnswerFormat
+  options: string[]
+  correct: number | null
+  accepted_answers: string[]
+  solution: string
+  needs_review: boolean
+  review: { status: 'ok' | 'mismatch' | 'unchecked'; generated: string; checked: string }
+}
+
+export type AiVariant = {
+  variant_no: number
+  status: AiVariantStatus
+  /** Что сейчас делается с вариантом: составление или самопроверка. */
+  stage: '' | 'generate' | 'check'
+  attempts: number
+  version: number
+  error: string
+  tasks: AiTask[]
+}
+
+/** Ответ GET /api/ai/jobs/{id} */
+export type AiJob = {
+  id: number
+  kind: 'test' | 'task'
+  status: 'running' | 'done' | 'failed'
+  error: string
+  total: number
+  done: number
+  ok: number
+  failed: number
+  needs_review: number
+  /** С чем запускали генерацию: умения нужны, чтобы разложить задания по таблице. */
+  request: {
+    skills: { title: string; tasks_per_variant: number; answer_format: AnswerFormat }[]
+  }
+  variants: AiVariant[]
+  task: AiTask | null
+}
+
+export type AiTokens = { prompt_tokens: number; completion_tokens: number }
+
+export type AiUsage = {
+  requests: number
+  failed: number
+  prompt_tokens: number
+  completion_tokens: number
+}
+
+/** Ответ GET /api/admin/ai */
+export type AdminAiOverview = {
+  enabled: boolean
+  model: string
+  check_model: string
+  daily_limit: number
+  today: { generate: AiUsage; check: AiUsage }
+  month: { generate: AiUsage; check: AiUsage }
+  by_teacher: {
+    id: number
+    full_name: string
+    email: string
+    jobs_today: number
+    jobs_month: number
+    generate_day: AiTokens
+    check_day: AiTokens
+    generate_month: AiTokens
+    check_month: AiTokens
+  }[]
 }

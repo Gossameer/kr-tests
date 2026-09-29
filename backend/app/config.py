@@ -54,8 +54,27 @@ class Settings(BaseSettings):
     # На школьном сервере её лучше выключить: она перечисляет все эндпоинты.
     docs_enabled: bool = True
 
+    # --- Генерация заданий через ИИ (AITUNNEL, OpenAI-совместимый API) ---
+    #
+    # Ключ живёт ТОЛЬКО на сервере: на фронт он не уходит и в логи не пишется.
+    # Пустой ключ = встроенная генерация выключена, учителю остаётся ручной путь
+    # (скопировать промт во внешний чат и вставить ответ).
+    ai_api_base_url: str = "https://api.aitunnel.ru/v1"
+    ai_api_key: str = ""
+    # Модель, которая составляет задания.
+    ai_model: str = "qwen3.7-plus"
+    # Модель самопроверки: решает каждое задание заново. Пусто → ai_model.
+    ai_check_model: str = "gpt-5-mini"
+    # Уходит в запросы самопроверки как reasoning_effort. Пусто → не передаём.
+    ai_check_reasoning_effort: str = "low"
+    # max_tokens передаётся в КАЖДОМ запросе: по нему провайдер резервирует
+    # стоимость, без него резерв считается по максимуму модели.
+    ai_gen_max_tokens: int = 4000
+    ai_check_max_tokens: int = 1500
+    ai_timeout_seconds: float = 120
+
     # Название и версия — попадают в автодокументацию.
-    app_name: str = "КР — сервис контрольных работ"
+    app_name: str = "Проверочные работы — сервис школы №2090"
     app_version: str = "1.0.0"
 
     model_config = SettingsConfigDict(
@@ -68,6 +87,16 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """Превращает "a,b" в ["a", "b"] — в таком виде это нужно FastAPI."""
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def ai_enabled(self) -> bool:
+        """Настроена ли встроенная генерация: без ключа запросы делать нечем."""
+        return bool(self.ai_api_key.strip())
+
+    @property
+    def ai_check_model_name(self) -> str:
+        """Модель самопроверки с учётом правила «пусто → основная модель»."""
+        return self.ai_check_model.strip() or self.ai_model
 
 
 @lru_cache

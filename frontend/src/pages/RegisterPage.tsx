@@ -9,11 +9,13 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useAuth } from '../lib/authContext'
+import { usePageTitle } from '../lib/usePageTitle'
 
 /** Те же требования, что и на сервере. */
 const MIN_PASSWORD = 8
 
 export default function RegisterPage() {
+  usePageTitle('Регистрация учителя')
   const { signUp } = useAuth()
   const navigate = useNavigate()
 
@@ -81,7 +83,7 @@ export default function RegisterPage() {
             placeholder="Иванова Анна Петровна"
             autoComplete="name"
           />
-          <p className="hint">Это имя увидят ученики на странице контрольной.</p>
+          <p className="hint">Это имя увидят ученики на странице проверочной работы.</p>
 
           <label className="label label--spaced" htmlFor="reg-email">
             Email

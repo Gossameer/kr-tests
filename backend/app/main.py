@@ -14,10 +14,10 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db
+from app import ai_generation, db
 from app.config import get_settings
 from app.errors import validation_error_handler
-from app.routers import admin, auth, health, public, results, tests
+from app.routers import admin, ai, auth, health, public, results, tests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -38,9 +38,30 @@ async def lifespan(app: FastAPI):
     try:
         db.init_pool()
         logger.info("Подключение к PostgreSQL установлено")
+        # Генерации, оборванные прошлой остановкой сервера, помечаем
+        # «не удалось», чтобы учитель мог их повторить.
+        ai_generation.recover_interrupted_jobs()
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось подключиться к базе: %s", exc)
         logger.error("Проверь, что PostgreSQL запущен и DATABASE_URL в backend/.env верный")
+
+    if settings.ai_enabled:
+        # Только модели — ключ в лог не пишем никогда.
+        logger.info(
+            "Генерация через ИИ включена: модель %s, самопроверка %s",
+            settings.ai_model,
+            settings.ai_check_model_name,
+        )
+        key = settings.ai_api_key.strip()
+        if not key.isascii() or any(char.isspace() for char in key):
+            # Частая ошибка: в .env осталась заглушка по-русски или ключ скопировался
+            # с переводом строки. Такой ключ не уйдёт даже в заголовок запроса.
+            logger.error(
+                "AI_API_KEY записан недопустимыми символами (не латиница или пробелы "
+                "внутри) — генерация работать не будет. Вставьте настоящий ключ AITUNNEL."
+            )
+    else:
+        logger.info("Генерация через ИИ выключена (AI_API_KEY пуст) — доступен ручной путь")
 
     yield  # здесь приложение работает и обрабатывает запросы
 
@@ -51,7 +72,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="API сервиса контрольных работ по умениям.",
+    description="API сервиса проверочных работ по умениям.",
     lifespan=lifespan,
     # На школьном сервере автодокументацию выключаем (DOCS_ENABLED=false):
     # она перечисляет все эндпоинты, а пользы посетителям не приносит.
@@ -78,6 +99,8 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(ai.admin_router)
+app.include_router(ai.router)
 app.include_router(tests.router)
 app.include_router(tests.my_router)
 app.include_router(public.router)

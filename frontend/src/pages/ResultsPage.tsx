@@ -22,6 +22,7 @@ import {
 } from '../api'
 import CopyLink from '../components/CopyLink'
 import type { AttemptDetail, AttemptRow, ResultsOverview, SkillStat } from '../types'
+import { usePageTitle } from '../lib/usePageTitle'
 
 type Loading =
   | { kind: 'loading' }
@@ -73,7 +74,8 @@ function averagePercent(attempts: AttemptRow[], skillId: number): number | undef
 }
 
 export default function ResultsPage() {
-  // Контрольная определяется её номером, а права проверяет сервер:
+  usePageTitle('Результаты')
+  // Проверочная работа определяется её номером, а права проверяет сервер:
   // чужую по прямой ссылке не открыть.
   const { testId: testIdParam = '' } = useParams()
   const testId = Number(testIdParam)
@@ -158,7 +160,7 @@ export default function ResultsPage() {
   async function handleDeleteAttempt(attemptId: number, studentName: string) {
     const confirmed = window.confirm(
       `Удалить работу «${studentName}»?\n\n` +
-        'Ответы будут удалены безвозвратно, зато ученик сможет пройти контрольную заново.',
+        'Ответы будут удалены безвозвратно, зато ученик сможет пройти работу заново.',
     )
     if (!confirmed) {
       return
@@ -180,8 +182,8 @@ export default function ResultsPage() {
 
   async function handleDeleteTest() {
     const typed = window.prompt(
-      'Удалить контрольную вместе со всеми работами?\n\n' +
-        'Это действие необратимо. Для подтверждения введите название контрольной:',
+      'Удалить проверочную работу вместе со всеми ответами учеников?\n\n' +
+        'Это действие необратимо. Для подтверждения введите название работы:',
     )
     if (typed === null) {
       return
@@ -193,7 +195,7 @@ export default function ResultsPage() {
       await deleteTest(testId, typed)
       navigate('/')
     } catch (error: unknown) {
-      setActionError(error instanceof Error ? error.message : 'Не удалось удалить контрольную')
+      setActionError(error instanceof Error ? error.message : 'Не удалось удалить работу. Обновите страницу и попробуйте ещё раз.')
     } finally {
       setBusy(false)
     }
@@ -218,7 +220,7 @@ export default function ResultsPage() {
         </section>
         {!isTechnical && (
           <p className="muted">
-            Открывать результаты может только автор контрольной и администратор школы.
+            Открывать результаты может только автор работы и администратор школы.
           </p>
         )}
       </main>
@@ -450,7 +452,9 @@ export default function ResultsPage() {
         <h2>Работы</h2>
 
         {shown.length === 0 ? (
-          <p className="empty">Работ пока нет.</p>
+          <p className="empty">
+            Пока никто не сдал. Когда ученики сдадут работу, она появится в этом списке.
+          </p>
         ) : (
           <>
             <p className="muted">Нажмите на строку, чтобы посмотреть разбор работы.</p>
@@ -576,9 +580,9 @@ export default function ResultsPage() {
 
       {/* ------------------------- Опасная зона ------------------------- */}
       <section className="card card--danger">
-        <h2>Удалить контрольную</h2>
+        <h2>Удалить проверочную работу</h2>
         <p className="muted">
-          Вместе с контрольной удалятся все умения, задания и сданные работы. Отменить
+          Вместе с ней удалятся все умения, задания и ответы учеников. Отменить
           это нельзя. Для подтверждения потребуется ввести название.
         </p>
         <div className="row">
@@ -588,7 +592,7 @@ export default function ResultsPage() {
             onClick={handleDeleteTest}
             disabled={busy}
           >
-            Удалить контрольную
+            Удалить проверочную работу
           </button>
         </div>
       </section>

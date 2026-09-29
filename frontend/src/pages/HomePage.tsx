@@ -1,10 +1,10 @@
 /**
- * Кабинет учителя: список своих контрольных.
+ * Кабинет учителя: список своих проверочных работ.
  *
- * Список приходит С СЕРВЕРА, а не из памяти браузера: контрольные привязаны
+ * Список приходит С СЕРВЕРА, а не из памяти браузера: проверочные работы привязаны
  * к учётной записи, поэтому они на месте и на другом компьютере.
  *
- * Администратор видит здесь контрольные всей школы — с именем автора.
+ * Администратор видит здесь проверочные работы всей школы — с именем автора.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -12,6 +12,7 @@ import { Link } from 'react-router'
 import { fetchMyTests } from '../api'
 import { useAuth } from '../lib/authContext'
 import type { MyTest } from '../types'
+import { usePageTitle } from '../lib/usePageTitle'
 
 type Loading =
   | { kind: 'loading' }
@@ -28,6 +29,7 @@ function formatDate(value: string): string {
 
 export default function HomePage() {
   const { user } = useAuth()
+  usePageTitle(user?.role === 'admin' ? 'Проверочные работы школы' : 'Мои проверочные работы')
   const [loading, setLoading] = useState<Loading>({ kind: 'loading' })
   const [copiedCode, setCopiedCode] = useState('')
 
@@ -58,15 +60,15 @@ export default function HomePage() {
   return (
     <main className="page page--wide">
       <section className="hero">
-        <h1>{user?.role === 'admin' ? 'Контрольные школы' : 'Мои контрольные'}</h1>
+        <h1>{user?.role === 'admin' ? 'Проверочные работы школы' : 'Мои проверочные работы'}</h1>
         <p className="hero__text">
           {user?.role === 'admin'
-            ? 'Все контрольные, созданные учителями школы. Можно открыть результаты любой.'
-            : 'Составьте контрольную по умениям, отправьте классу ссылку и посмотрите, ' +
+            ? 'Все проверочные работы, созданные учителями школы. Можно открыть результаты любой.'
+            : 'Составьте проверочную работу по умениям, отправьте классу ссылку и посмотрите, ' +
               'какие умения освоены, а какие нет.'}
         </p>
         <Link className="btn btn--primary btn--large" to="/create">
-          Создать контрольную
+          Создать проверочную работу
         </Link>
       </section>
 
@@ -87,7 +89,10 @@ export default function HomePage() {
 
           {loading.tests.length === 0 ? (
             <p className="empty">
-              Контрольных пока нет. Нажмите «Создать контрольную» — это займёт несколько минут.
+              {user?.role === 'admin'
+                ? 'В школе пока нет проверочных работ. Нажмите «Создать проверочную работу».'
+                : 'У вас пока нет проверочных работ. Нажмите «Создать проверочную работу» — ' +
+                  'это займёт несколько минут.'}
             </p>
           ) : (
             <ul className="testlist">

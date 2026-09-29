@@ -1,5 +1,5 @@
 /* =====================================================================
-   КР — сервис контрольных работ. Единый файл стилей.
+   Проверочные работы — сервис школы. Единый файл стилей.
 
    Сторонних библиотек нет намеренно: весь набор элементов небольшой,
    а свой CSS проще читать и править новичку.
@@ -14,7 +14,7 @@
      7. Вкладки и редактор вопросов
      8. Вопросы и варианты (превью, страница ученика)
      9. Таблица результатов и сводка
-    10. Главная страница: список контрольных
+    10. Главная страница: список проверочных работ
     11. Узкие экраны (телефон)
    ===================================================================== */
 
@@ -443,6 +443,93 @@ code {
   margin: var(--gap-s) 0 0;
   color: var(--bad);
   font-size: 0.9rem;
+}
+
+/* Поле с ошибкой: красная рамка, текст ошибки — сразу под полем (.field-error). */
+.input--invalid,
+.input--invalid:focus {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.input--invalid:focus {
+  outline-color: var(--bad-soft);
+}
+
+/* «Что дальше»: короткая подсказка следующего шага. */
+.nexthint {
+  margin: var(--gap-s) 0 var(--gap-m);
+  padding: var(--gap-s) var(--gap-m);
+  border-left: 3px solid var(--brand);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--brand-soft);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+/* ---------- Блок перед «Опубликовать»: что осталось или «всё готово» ---------- */
+
+.publish {
+  margin-top: var(--gap-l);
+}
+
+.todo {
+  padding: var(--gap-m) var(--gap-l);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l);
+  background: var(--card);
+}
+
+/* После «Опубликовать» с пропусками список становится красным. */
+.todo--alert {
+  border-color: var(--bad);
+}
+
+/* Остались только жёлтые задания — не ошибка, а просьба посмотреть. */
+.todo--soft {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.todo__title {
+  margin: 0 0 var(--gap-s);
+  font-size: 1.05rem;
+}
+
+.todo__list {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.todo__list li + li {
+  margin-top: var(--gap-xs);
+}
+
+/* Пункт — кнопка: по нажатию ведёт к полю. Выглядит как ссылка. */
+.todo__item {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--brand);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.todo__item:hover {
+  text-decoration-thickness: 2px;
+}
+
+.ready {
+  margin: 0;
+  padding: var(--gap-m) var(--gap-l);
+  border: 1px solid var(--ok);
+  border-radius: var(--radius-l);
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-weight: 600;
 }
 
 /* Ссылка в поле «только для чтения» + кнопка копирования. */
@@ -980,7 +1067,7 @@ code {
 }
 
 /* =====================================================================
-   10. Главная страница: список контрольных
+   10. Главная страница: список проверочных работ
    ===================================================================== */
 
 .testlist {
@@ -1254,6 +1341,121 @@ code {
   border-top: 1px dashed var(--border-strong);
 }
 
+/* ===================== Генерация через ИИ ===================== */
+
+.aigen {
+  margin-top: var(--gap-m);
+}
+
+/* Ссылка-кнопка: ручной путь — запасной, поэтому мелко и без рамки. */
+.linkbtn {
+  margin-top: var(--gap-xs);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.88rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.linkbtn:hover {
+  color: var(--brand);
+}
+
+.aiprogress {
+  margin-top: var(--gap-m);
+  max-width: 560px;
+}
+
+/* Задание, где ответ ИИ не подтвердился самопроверкой. */
+.cell--review {
+  border: 2px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--text);
+}
+
+/* Место скрытой клетки при фильтре «показать только требующие проверки». */
+.cell--hidden {
+  visibility: hidden;
+  cursor: default;
+}
+
+.reviewbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-s) var(--gap-m);
+  margin-bottom: var(--gap-m);
+  padding: var(--gap-s) var(--gap-m);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+}
+
+.reviewbar__count {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.reviewbar .hint {
+  margin: 0;
+}
+
+.check--inline {
+  margin-top: 0;
+  align-items: center;
+}
+
+.reviewnote {
+  margin-bottom: var(--gap-m);
+  padding: var(--gap-s) var(--gap-m);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+}
+
+.reviewnote p {
+  margin: 0 0 var(--gap-xs);
+}
+
+/* Состояние варианта в шапке таблицы: в очереди, составляется, не удался.
+   Шапка таблицы набрана капсом — подписи состояния пишем обычным регистром. */
+.varstate,
+.varstate__error,
+.varstate__retry {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.varstate {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.varstate--failed {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.varstate__retry {
+  margin-top: var(--gap-xs);
+}
+
+.varstate__error {
+  display: block;
+  max-width: 220px;
+  margin-top: var(--gap-xs);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  white-space: normal;
+}
+
 /* ===================== Поле ответа у ученика ===================== */
 
 .answerbox {
@@ -1471,4 +1673,38 @@ code {
   .tiles {
     grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   }
+}
+
+/* ===================== Админка → ИИ ===================== */
+
+.input--short {
+  width: 120px;
+}
+
+.aiusage + .aiusage {
+  margin-top: var(--gap-l);
+}
+
+.aiusage h3 {
+  margin: 0 0 var(--gap-s);
+  font-size: 1rem;
+}
+
+/* ===================== Ученик: задания без ответа ===================== */
+
+.question--missing {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+.todo__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs) var(--gap-m);
+  margin: 0 0 var(--gap-s);
+}
+
+.page--student .todo,
+.page--student .ready {
+  margin-top: var(--gap-l);
 }

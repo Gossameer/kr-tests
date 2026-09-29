@@ -3,14 +3,16 @@
  *
  * После входа возвращаем человека туда, куда он шёл. Адрес приходит в state
  * от ProtectedRoute — иначе учитель, нажавший «Результаты» из закладки,
- * попадал бы на главную и искал контрольную заново.
+ * попадал бы на главную и искал проверочную работу заново.
  */
 
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../lib/authContext'
+import { usePageTitle } from '../lib/usePageTitle'
 
 export default function LoginPage() {
+  usePageTitle('Вход')
   const { signIn } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -47,7 +49,7 @@ export default function LoginPage() {
   return (
     <main className="page page--narrow">
       <h1>Вход для учителя</h1>
-      <p className="lead">Ученикам вход не нужен — они открывают контрольную по ссылке.</p>
+      <p className="lead">Ученикам вход не нужен — они открывают проверочную работу по ссылке.</p>
 
       <section className="card">
         {/* form, а не просто кнопка: срабатывает Enter и подхватывается
