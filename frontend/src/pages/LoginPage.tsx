@@ -6,8 +6,9 @@
  * попадал бы на главную и искал проверочную работу заново.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
+import { fetchAuthOptions } from '../api'
 import { useAuth } from '../lib/authContext'
 import { usePageTitle } from '../lib/usePageTitle'
 
@@ -21,6 +22,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // Регистрацию по школьному коду администратор может выключить — тогда
+  // ссылки на неё здесь нет. Пока ответ не пришёл, ссылку не показываем.
+  const [selfRegistration, setSelfRegistration] = useState(false)
+
+  useEffect(() => {
+    fetchAuthOptions()
+      .then((options) => setSelfRegistration(options.self_registration))
+      .catch(() => setSelfRegistration(false))
+  }, [])
 
   // Куда вернуться после входа.
   const from = (location.state as { from?: string } | null)?.from ?? '/'
@@ -65,7 +75,7 @@ export default function LoginPage() {
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             autoComplete="username"
-            placeholder="ivanova@school.ru"
+            placeholder="Например: ivanova@school.ru"
           />
 
           <label className="label label--spaced" htmlFor="login-password">
@@ -90,9 +100,20 @@ export default function LoginPage() {
         </form>
 
         <p className="hint">
-          Нет учётной записи? <Link to="/register">Зарегистрируйтесь</Link> — понадобится
-          школьный код, его выдаёт администратор.
+          <Link to="/forgot">Забыли пароль?</Link>
         </p>
+
+        {selfRegistration ? (
+          <p className="hint">
+            Нет учётной записи? <Link to="/register">Зарегистрируйтесь</Link> — понадобится
+            школьный код, его выдаёт администратор.
+          </p>
+        ) : (
+          <p className="hint">
+            Нет учётной записи? Её создаёт администратор школы — вам придёт письмо
+            с приглашением.
+          </p>
+        )}
       </section>
     </main>
   )

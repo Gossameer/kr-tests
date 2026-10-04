@@ -41,8 +41,11 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
-def verify_password(password: str, password_hash: str) -> bool:
+def verify_password(password: str, password_hash: str | None) -> bool:
     """Проверяет пароль. Любая ошибка разбора хеша считается «не подошёл»."""
+    # У приглашённого учителя пароля ещё нет — войти по паролю он не может.
+    if not password_hash:
+        return False
     try:
         raw = password.encode("utf-8")[:BCRYPT_MAX_BYTES]
         return bcrypt.checkpw(raw, password_hash.encode("utf-8"))

@@ -2,6 +2,7 @@
 Регистрация, вход и выход.
 
     POST /api/auth/register — учитель заводит себе учётку по школьному коду
+                              (только если это разрешено в настройках школы)
     POST /api/auth/login    — вход по email и паролю
     POST /api/auth/logout   — выход
     GET  /api/auth/me       — кто сейчас вошёл (нужно фронтенду при загрузке)
@@ -100,6 +101,17 @@ def register(payload: RegisterIn, response: Response) -> UserOut:
     email = normalize_email(payload.email)
 
     with pool.connection() as conn:
+        # Регистрация по коду включается в админке; по умолчанию выключена —
+        # учётки заводит администратор списком и рассылает приглашения.
+        if get_setting(conn, "allow_self_registration", "false") != "true":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Самостоятельная регистрация отключена. Учётную запись создаёт "
+                    "администратор школы — попросите его прислать приглашение."
+                ),
+            )
+
         expected_code = get_setting(conn, "school_code")
 
         # Сравниваем без учёта регистра и пробелов: код диктуют голосом.

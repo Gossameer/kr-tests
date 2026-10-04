@@ -1,9 +1,9 @@
 /**
  * Админка → Настройки: /admin/settings
  *
- * Пока настройка одна — школьный код регистрации. Любой, кто его знает,
- * может завести себе учётку учителя, поэтому код стоит менять, когда он
- * «расходится» по школе.
+ * Две настройки: можно ли учителю зарегистрироваться самому и школьный код
+ * для такой регистрации. По умолчанию самостоятельная регистрация выключена —
+ * учётки заводит администратор в разделе «Учителя» и рассылает приглашения.
  */
 
 import { useEffect, useState } from 'react'
@@ -13,6 +13,7 @@ import { usePageTitle } from '../lib/usePageTitle'
 export default function AdminSettingsPage() {
   usePageTitle('Настройки школы')
   const [code, setCode] = useState('')
+  const [allowRegistration, setAllowRegistration] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
@@ -22,6 +23,7 @@ export default function AdminSettingsPage() {
     fetchSchoolSettings()
       .then((settings) => {
         setCode(settings.school_code)
+        setAllowRegistration(settings.allow_self_registration)
         setLoaded(true)
       })
       .catch((problem: unknown) =>
@@ -37,8 +39,9 @@ export default function AdminSettingsPage() {
     setSaved(false)
 
     try {
-      const settings = await updateSchoolSettings(code.trim())
+      const settings = await updateSchoolSettings(code.trim(), allowRegistration)
       setCode(settings.school_code)
+      setAllowRegistration(settings.allow_self_registration)
       setSaved(true)
     } catch (problem: unknown) {
       setError(problem instanceof Error ? problem.message : 'Не удалось сохранить')
@@ -58,13 +61,37 @@ export default function AdminSettingsPage() {
       )}
 
       <section className="card">
-        <h2>Школьный код регистрации</h2>
+        <h2>Самостоятельная регистрация</h2>
         <p className="muted">
-          Учитель вводит его при регистрации. Смена кода не влияет на тех, кто уже
-          зарегистрировался, — только на новые учётные записи.
+          Обычно учётные записи создаёт администратор: раздел «Учителя» → «Добавить
+          списком». Здесь можно дополнительно разрешить учителям регистрироваться самим
+          по школьному коду.
         </p>
 
         <form onSubmit={handleSave}>
+          <label className="check">
+            <input
+              id="allow-registration"
+              type="checkbox"
+              checked={allowRegistration}
+              onChange={(event) => {
+                setAllowRegistration(event.target.checked)
+                setSaved(false)
+              }}
+              disabled={!loaded}
+            />
+            <span>
+              Разрешить самостоятельную регистрацию
+              <span className="hint">
+                {' '}
+                — {allowRegistration
+                  ? 'любой, кто знает школьный код, сможет завести учётку учителя'
+                  : 'на странице входа нет ссылки на регистрацию, зарегистрироваться самому нельзя'}
+              </span>
+            </span>
+          </label>
+          <p className="hint">Уже созданные учётные записи эта настройка не затрагивает.</p>
+
           <label className="label label--spaced" htmlFor="school-code">
             Код
           </label>
@@ -79,9 +106,14 @@ export default function AdminSettingsPage() {
             disabled={!loaded}
             placeholder="ШКОЛА-2090"
           />
-          <p className="hint">Не короче 4 символов. Регистр при проверке не важен.</p>
+          <p className="hint">
+            Не короче 4 символов. Регистр при проверке не важен.{' '}
+            {allowRegistration
+              ? 'Учитель вводит код при регистрации.'
+              : 'Сейчас код не используется: регистрация выключена.'}
+          </p>
 
-          {saved && <p className="notice">Код сохранён.</p>}
+          {saved && <p className="notice">Настройки сохранены.</p>}
 
           <div className="row">
             <button type="submit" className="btn btn--primary" disabled={busy || !loaded}>

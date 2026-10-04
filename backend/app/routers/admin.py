@@ -15,6 +15,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from psycopg import errors as pg_errors
 
 from app import db
 from app.auth import db_unavailable, require_admin
@@ -35,6 +36,52 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 WEAK_SKILL_PERCENT = 50
 
 
+# Список учителей с рабочими цифрами и состоянием приглашения. Один запрос
+# на оба случая: весь список и одна строка после изменения.
+TEACHERS_SQL = """
+    SELECT u.id, u.full_name, u.email, u.role, u.is_active, u.status,
+           u.created_at, u.last_login_at,
+           count(DISTINCT t.id) AS tests_count,
+           count(a.id)          AS attempts_count,
+           mail.created_at      AS invite_sent_at,
+           mail.status          AS invite_mail_status,
+           coalesce(mail.error, '') AS invite_mail_error,
+           link.expires_at      AS invite_expires_at
+    FROM users u
+    LEFT JOIN tests t    ON t.teacher_id = u.id
+    LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
+    -- Последнее письмо-приглашение этому человеку.
+    LEFT JOIN LATERAL (
+        SELECT m.created_at, m.status, m.error FROM mail_log m
+        WHERE m.user_id = u.id AND m.kind = 'invite'
+        ORDER BY m.id DESC LIMIT 1
+    ) mail ON TRUE
+    -- Действующая (не использованная и не заменённая) ссылка-приглашение.
+    LEFT JOIN LATERAL (
+        SELECT k.expires_at FROM auth_tokens k
+        WHERE k.user_id = u.id AND k.kind = 'invite'
+          AND k.used_at IS NULL AND k.revoked_at IS NULL
+        ORDER BY k.id DESC LIMIT 1
+    ) link ON TRUE
+    {where}
+    GROUP BY u.id, mail.created_at, mail.status, mail.error, link.expires_at
+    ORDER BY u.role, u.full_name
+"""
+
+
+def teacher_row(row: dict) -> TeacherRow:
+    """Строка списка + понятное состояние учётки для столбца «Статус»."""
+    if not row["is_active"]:
+        state = "disabled"
+    elif row["status"] == "invited":
+        expires = row["invite_expires_at"]
+        alive = expires is not None and expires > datetime.now(timezone.utc)
+        state = "invited" if alive else "invite_expired"
+    else:
+        state = "active"
+    return TeacherRow(**{**row, "state": state})
+
+
 def percent_of(correct: int | None, total: int | None) -> int:
     if not correct or not total:
         return 0
@@ -52,22 +99,16 @@ def list_teachers(admin: dict = Depends(require_admin)) -> list[TeacherRow]:
     except Exception as exc:  # noqa: BLE001
         raise db_unavailable() from exc
 
-    with pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT u.id, u.full_name, u.email, u.role, u.is_active,
-                   u.created_at, u.last_login_at,
-                   count(DISTINCT t.id) AS tests_count,
-                   count(a.id)          AS attempts_count
-            FROM users u
-            LEFT JOIN tests t    ON t.teacher_id = u.id
-            LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
-            GROUP BY u.id
-            ORDER BY u.role, u.full_name
-            """
-        ).fetchall()
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(TEACHERS_SQL.format(where="")).fetchall()
+    except (pg_errors.UndefinedTable, pg_errors.UndefinedColumn) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Список учителей недоступен: на сервере не накачена миграция 009.",
+        ) from exc
 
-    return [TeacherRow(**row) for row in rows]
+    return [teacher_row(row) for row in rows]
 
 
 @router.patch(
@@ -113,18 +154,7 @@ def update_teacher(
                 conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
 
         row = conn.execute(
-            """
-            SELECT u.id, u.full_name, u.email, u.role, u.is_active,
-                   u.created_at, u.last_login_at,
-                   count(DISTINCT t.id) AS tests_count,
-                   count(a.id)          AS attempts_count
-            FROM users u
-            LEFT JOIN tests t    ON t.teacher_id = u.id
-            LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
-            WHERE u.id = %s
-            GROUP BY u.id
-            """,
-            (user_id,),
+            TEACHERS_SQL.format(where="WHERE u.id = %s"), (user_id,)
         ).fetchone()
 
     logger.info(
@@ -133,7 +163,7 @@ def update_teacher(
         "разблокировал" if payload.is_active else "заблокировал",
         user_id,
     )
-    return TeacherRow(**row)
+    return teacher_row(row)
 
 
 @router.post(
@@ -160,7 +190,10 @@ def reset_password(
 
     with pool.connection() as conn, conn.transaction():
         row = conn.execute(
-            "UPDATE users SET password_hash = %s WHERE id = %s RETURNING id, email",
+            """
+            UPDATE users SET password_hash = %s, status = 'active'
+            WHERE id = %s RETURNING id, email
+            """,
             (hash_password(new_password), user_id),
         ).fetchone()
 
@@ -171,12 +204,33 @@ def reset_password(
             )
 
         conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+        # Пароль выдан лично — письма-приглашения и ссылки сброса больше не нужны.
+        conn.execute(
+            """
+            UPDATE auth_tokens SET revoked_at = now()
+            WHERE user_id = %s AND used_at IS NULL AND revoked_at IS NULL
+            """,
+            (user_id,),
+        )
 
     logger.info("Администратор %s сбросил пароль пользователю %s", admin["email"], row["email"])
     return PasswordResetOut(
         user_id=row["id"],
         email=row["email"],
         temporary_password=new_password,
+    )
+
+
+def read_settings(conn) -> SettingsOut:
+    values = {
+        row["key"]: row["value"]
+        for row in conn.execute(
+            "SELECT key, value FROM settings WHERE key IN ('school_code', 'allow_self_registration')"
+        ).fetchall()
+    }
+    return SettingsOut(
+        school_code=values.get("school_code", ""),
+        allow_self_registration=values.get("allow_self_registration") == "true",
     )
 
 
@@ -188,9 +242,7 @@ def get_settings(admin: dict = Depends(require_admin)) -> SettingsOut:
         raise db_unavailable() from exc
 
     with pool.connection() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key = 'school_code'").fetchone()
-
-    return SettingsOut(school_code=row["value"] if row else "")
+        return read_settings(conn)
 
 
 @router.put("/settings", response_model=SettingsOut, summary="Сменить школьный код")
@@ -215,9 +267,23 @@ def update_settings(
             """,
             (payload.school_code,),
         )
+        if payload.allow_self_registration is not None:
+            conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('allow_self_registration', %s, now())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+                """,
+                ("true" if payload.allow_self_registration else "false",),
+            )
+        result = read_settings(conn)
 
-    logger.info("Администратор %s сменил школьный код", admin["email"])
-    return SettingsOut(school_code=payload.school_code)
+    logger.info(
+        "Администратор %s изменил настройки школы (регистрация по коду: %s)",
+        admin["email"],
+        "разрешена" if result.allow_self_registration else "выключена",
+    )
+    return result
 
 
 @router.get("/stats", summary="Статистика по школе")

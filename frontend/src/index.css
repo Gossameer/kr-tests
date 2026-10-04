@@ -1708,3 +1708,77 @@ code {
 .page--student .ready {
   margin-top: var(--gap-l);
 }
+
+/* ===================== Учителя: приглашения ===================== */
+
+/* Предупреждение, а не ошибка: работать можно, но по-другому. */
+.alert--warn {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* Ждём действия учителя: приглашён, дубль в списке. */
+.badge--wait {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* Выключено / не требует внимания. */
+.badge--muted {
+  background: var(--border);
+  color: var(--muted);
+}
+
+.hint--bad {
+  color: var(--bad);
+}
+
+.importpreview {
+  margin-top: var(--gap-m);
+}
+
+/* Ссылка-приглашение в таблице: длинная, переносим по символам. */
+.linkcode {
+  display: block;
+  font-size: 0.8rem;
+  white-space: normal;
+  word-break: break-all;
+}
+
+/* «Чья это учётка» на странице установки пароля. */
+.whois {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--gap-xs) var(--gap-m);
+  margin: 0 0 var(--gap-s);
+}
+
+.whois dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.whois dd {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* Вторая строка в ячейке таблицы: email под ФИО, состояние письма под датой. */
+.cellsub {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Кнопки действий в строке таблицы — столбиком: в ряд они не помещаются по ширине. */
+.rowactions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--gap-xs);
+}
+
+.cellsub.hint--bad {
+  color: var(--bad);
+}

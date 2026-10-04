@@ -586,6 +586,17 @@ class TeacherRow(BaseModel):
     last_login_at: datetime | None
     tests_count: int
     attempts_count: int
+    # Что показать в столбце «Статус»:
+    #   invited        — приглашён, ссылка ещё действует;
+    #   invite_expired — приглашён, но действующей ссылки нет;
+    #   active         — пароль задан, может входить;
+    #   disabled       — отключён администратором.
+    state: Literal["invited", "invite_expired", "active", "disabled"] = "active"
+    # Последнее письмо-приглашение: когда и чем кончилась отправка.
+    invite_sent_at: datetime | None = None
+    invite_mail_status: str | None = None
+    invite_mail_error: str = ""
+    invite_expires_at: datetime | None = None
 
 
 class TeacherUpdate(BaseModel):
@@ -598,12 +609,16 @@ class SettingsOut(BaseModel):
     """Настройки школы."""
 
     school_code: str
+    # Можно ли учителю зарегистрироваться самому по школьному коду.
+    allow_self_registration: bool = False
 
 
 class SettingsUpdate(BaseModel):
-    """Смена школьного кода."""
+    """Смена школьного кода и разрешения на самостоятельную регистрацию."""
 
     school_code: str
+    # None — не менять (старый фронтенд этого поля не присылает).
+    allow_self_registration: bool | None = None
 
     @field_validator("school_code")
     @classmethod

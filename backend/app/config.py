@@ -73,6 +73,24 @@ class Settings(BaseSettings):
     ai_check_max_tokens: int = 1500
     ai_timeout_seconds: float = 120
 
+    # --- Почта: приглашения учителям и сброс пароля ---
+    #
+    # SMTP_HOST пуст = тестовый режим: письма никуда не уходят, а пишутся в лог
+    # сервера и в журнал писем; ссылки администратор копирует из админки вручную.
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    # Пароль SMTP не пишется ни в логи, ни в журнал писем, ни в ответы API.
+    smtp_password: str = ""
+    # Адрес отправителя. Пусто → берётся SMTP_USER.
+    smtp_from: str = ""
+    smtp_from_name: str = "Проверочные работы · Школа 2090"
+    # true — шифрование с первой секунды (порт 465). false — обычное соединение
+    # с переходом на шифрование командой STARTTLS (порт 587).
+    smtp_ssl: bool = True
+    # Адрес сайта, как его видит учитель: из него собираются ссылки в письмах.
+    public_base_url: str = "http://127.0.0.1:5174"
+
     # Название и версия — попадают в автодокументацию.
     app_name: str = "Проверочные работы — сервис школы №2090"
     app_version: str = "1.0.0"
@@ -87,6 +105,15 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """Превращает "a,b" в ["a", "b"] — в таком виде это нужно FastAPI."""
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def mail_enabled(self) -> bool:
+        """Настроена ли отправка писем. Без SMTP_HOST работаем в тестовом режиме."""
+        return bool(self.smtp_host.strip())
+
+    @property
+    def mail_from(self) -> str:
+        return self.smtp_from.strip() or self.smtp_user.strip()
 
     @property
     def ai_enabled(self) -> bool:

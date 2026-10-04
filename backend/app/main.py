@@ -14,10 +14,10 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import ai_generation, db
+from app import ai_generation, db, mailer
 from app.config import get_settings
 from app.errors import validation_error_handler
-from app.routers import admin, ai, auth, health, public, results, tests
+from app.routers import accounts, admin, ai, auth, health, public, results, tests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,6 +41,8 @@ async def lifespan(app: FastAPI):
         # Генерации, оборванные прошлой остановкой сервера, помечаем
         # «не удалось», чтобы учитель мог их повторить.
         ai_generation.recover_interrupted_jobs()
+        # Письма, ждавшие в очереди при остановке, уже не уйдут — отметим в журнале.
+        mailer.recover_interrupted()
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось подключиться к базе: %s", exc)
         logger.error("Проверь, что PostgreSQL запущен и DATABASE_URL в backend/.env верный")
@@ -62,6 +64,19 @@ async def lifespan(app: FastAPI):
             )
     else:
         logger.info("Генерация через ИИ выключена (AI_API_KEY пуст) — доступен ручной путь")
+
+    if settings.mail_enabled:
+        # Только адрес сервера и отправителя — пароль SMTP в лог не пишем никогда.
+        logger.info(
+            "Почта включена: %s:%s, отправитель %s",
+            settings.smtp_host,
+            settings.smtp_port,
+            settings.mail_from or "не задан (SMTP_FROM)",
+        )
+    else:
+        logger.info(
+            "Почта не настроена (SMTP_HOST пуст) — тестовый режим: письма пишутся в лог"
+        )
 
     yield  # здесь приложение работает и обрабатывает запросы
 
@@ -98,6 +113,8 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 # Роутеры — способ разложить эндпоинты по файлам вместо одного длинного main.py.
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(accounts.router)
+app.include_router(accounts.admin_router)
 app.include_router(admin.router)
 app.include_router(ai.admin_router)
 app.include_router(ai.router)

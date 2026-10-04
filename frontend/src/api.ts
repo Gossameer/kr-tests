@@ -8,6 +8,11 @@ import type {
   AiJob,
   AiStatus,
   AttemptDetail,
+  ImportPreview,
+  ImportResult,
+  InviteLink,
+  MailOverview,
+  TokenInfo,
   AttemptResult,
   CreatedTest,
   MyTest,
@@ -313,11 +318,17 @@ export async function fetchSchoolSettings(): Promise<SchoolSettings> {
   return parse<SchoolSettings>(await request(`${API_URL}/api/admin/settings`))
 }
 
-export async function updateSchoolSettings(schoolCode: string): Promise<SchoolSettings> {
+export async function updateSchoolSettings(
+  schoolCode: string,
+  allowSelfRegistration: boolean,
+): Promise<SchoolSettings> {
   const response = await request(`${API_URL}/api/admin/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ school_code: schoolCode }),
+    body: JSON.stringify({
+      school_code: schoolCode,
+      allow_self_registration: allowSelfRegistration,
+    }),
   })
   return parse<SchoolSettings>(response)
 }
@@ -437,4 +448,72 @@ export async function updateAiLimit(dailyLimit: number): Promise<{ daily_limit: 
     body: JSON.stringify({ daily_limit: dailyLimit }),
   })
   return parse<{ daily_limit: number }>(response)
+}
+
+/* ===================== Приглашения и сброс пароля ===================== */
+
+function postJson(url: string, body?: unknown): Promise<Response> {
+  return request(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
+/** GET /api/auth/options — показывать ли ссылку на регистрацию. */
+export async function fetchAuthOptions(): Promise<{ self_registration: boolean }> {
+  return parse<{ self_registration: boolean }>(await request(`${API_URL}/api/auth/options`))
+}
+
+/** POST /api/auth/forgot — «забыли пароль?». Ответ одинаковый для любого адреса. */
+export async function forgotPassword(email: string): Promise<{ message: string }> {
+  return parse<{ message: string }>(await postJson(`${API_URL}/api/auth/forgot`, { email }))
+}
+
+/** GET /api/auth/tokens/{token} — чья это ссылка; ошибка, если она больше не годится. */
+export async function fetchTokenInfo(token: string): Promise<TokenInfo> {
+  return parse<TokenInfo>(
+    await request(`${API_URL}/api/auth/tokens/${encodeURIComponent(token)}`),
+  )
+}
+
+/** POST /api/auth/tokens/{token} — задать пароль по ссылке и сразу войти. */
+export async function setPasswordByToken(token: string, password: string): Promise<User> {
+  return parse<User>(
+    await postJson(`${API_URL}/api/auth/tokens/${encodeURIComponent(token)}`, { password }),
+  )
+}
+
+/** POST /api/admin/teachers/import/preview — проверить список, ничего не создавая. */
+export async function previewTeacherImport(text: string): Promise<ImportPreview> {
+  return parse<ImportPreview>(
+    await postJson(`${API_URL}/api/admin/teachers/import/preview`, { text }),
+  )
+}
+
+/** POST /api/admin/teachers/import — создать учётки и отправить приглашения. */
+export async function importTeachers(text: string): Promise<ImportResult> {
+  return parse<ImportResult>(await postJson(`${API_URL}/api/admin/teachers/import`, { text }))
+}
+
+/**
+ * POST /api/admin/teachers/{id}/invite — новое приглашение.
+ * send=true — письмом, false — только ссылка. Прежние ссылки перестают работать.
+ */
+export async function inviteTeacher(userId: number, send: boolean): Promise<InviteLink> {
+  return parse<InviteLink>(
+    await postJson(`${API_URL}/api/admin/teachers/${userId}/invite`, { send }),
+  )
+}
+
+/** POST /api/admin/teachers/invite-pending — ещё раз всем, кто не активировал. */
+export async function invitePending(): Promise<{ invited: InviteLink[] }> {
+  return parse<{ invited: InviteLink[] }>(
+    await postJson(`${API_URL}/api/admin/teachers/invite-pending`),
+  )
+}
+
+/** GET /api/admin/mail — настроена ли почта и журнал писем. */
+export async function fetchMailOverview(): Promise<MailOverview> {
+  return parse<MailOverview>(await request(`${API_URL}/api/admin/mail`))
 }

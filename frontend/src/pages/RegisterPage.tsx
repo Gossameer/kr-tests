@@ -6,8 +6,9 @@
  * администратор школы.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
+import { fetchAuthOptions } from '../api'
 import { useAuth } from '../lib/authContext'
 import { usePageTitle } from '../lib/usePageTitle'
 
@@ -25,6 +26,14 @@ export default function RegisterPage() {
   const [schoolCode, setSchoolCode] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // null — ещё не знаем; false — администратор выключил регистрацию по коду.
+  const [allowed, setAllowed] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    fetchAuthOptions()
+      .then((options) => setAllowed(options.self_registration))
+      .catch(() => setAllowed(false))
+  }, [])
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -63,6 +72,33 @@ export default function RegisterPage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (allowed === null) {
+    return (
+      <main className="page page--narrow">
+        <p className="loading">Загружаем…</p>
+      </main>
+    )
+  }
+
+  if (!allowed) {
+    return (
+      <main className="page page--narrow">
+        <h1>Регистрация закрыта</h1>
+        <section className="card">
+          <p>
+            Учётные записи учителей создаёт администратор школы. Попросите его прислать
+            вам приглашение — по ссылке из письма вы зададите пароль и войдёте.
+          </p>
+          <div className="row">
+            <Link className="btn btn--primary" to="/login">
+              На страницу входа
+            </Link>
+          </div>
+        </section>
+      </main>
+    )
   }
 
   return (

@@ -308,6 +308,75 @@ export type TeacherRow = {
   last_login_at: string | null
   tests_count: number
   attempts_count: number
+  /** Что показать в столбце «Статус». */
+  state: TeacherState
+  /** Последнее письмо-приглашение: когда и чем кончилась отправка. */
+  invite_sent_at: string | null
+  invite_mail_status: MailStatus | null
+  invite_mail_error: string
+  invite_expires_at: string | null
+}
+
+/** Состояние учётки: приглашён / приглашение истекло / активен / отключён. */
+export type TeacherState = 'invited' | 'invite_expired' | 'active' | 'disabled'
+
+/** Что стало с письмом: в очереди, ушло, не ушло, почта не настроена. */
+export type MailStatus = 'queued' | 'sent' | 'failed' | 'test'
+
+/** Строка превью списка учителей. */
+export type ImportRow = {
+  line: number
+  full_name: string
+  email: string
+  status: 'new' | 'exists' | 'duplicate' | 'invalid'
+  message: string
+}
+
+/** Ответ POST /api/admin/teachers/import/preview */
+export type ImportPreview = {
+  rows: ImportRow[]
+  summary: { new: number; exists: number; duplicate: number; invalid: number }
+}
+
+/** Выданное приглашение: ссылку можно передать учителю лично. */
+export type InviteLink = {
+  id: number
+  full_name: string
+  email: string
+  invite_url: string
+  expires_at: string
+}
+
+/** Ответ POST /api/admin/teachers/import */
+export type ImportResult = {
+  created: InviteLink[]
+  skipped: ImportRow[]
+  mail_configured: boolean
+}
+
+/** Ответ GET /api/admin/mail */
+export type MailOverview = {
+  configured: boolean
+  from_address: string
+  public_base_url: string
+  log: {
+    id: number
+    to_email: string
+    full_name: string | null
+    kind: 'invite' | 'reset'
+    created_at: string
+    status: MailStatus
+    sent_at: string | null
+    error: string
+  }[]
+}
+
+/** Ответ GET /api/auth/tokens/{token}: чья ссылка и какого она вида. */
+export type TokenInfo = {
+  kind: 'invite' | 'reset'
+  full_name: string
+  email: string
+  expires_at: string
 }
 
 export type PasswordReset = {
@@ -318,6 +387,8 @@ export type PasswordReset = {
 
 export type SchoolSettings = {
   school_code: string
+  /** Можно ли учителю зарегистрироваться самому по школьному коду. */
+  allow_self_registration: boolean
 }
 
 export type SchoolStats = {

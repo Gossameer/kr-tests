@@ -40,6 +40,8 @@ FIELD_NAMES = {
     "accepted_answers": "правильные ответы (accepted_answers)",
     "solution": "решение (solution)",
     "attempt_token": "ключ попытки (attempt_token)",
+    "password": "пароль",
+    "email": "email",
 }
 
 # Человеческие формулировки для стандартных типов ошибок Pydantic.

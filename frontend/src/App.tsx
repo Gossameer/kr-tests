@@ -15,10 +15,12 @@ import AdminSettingsPage from './pages/AdminSettingsPage'
 import AdminStatsPage from './pages/AdminStatsPage'
 import AdminTeachersPage from './pages/AdminTeachersPage'
 import CreateTestPage from './pages/CreateTestPage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ResultsPage from './pages/ResultsPage'
+import SetPasswordPage from './pages/SetPasswordPage'
 import StudentTestPage from './pages/StudentTestPage'
 
 /**
@@ -140,6 +142,10 @@ export default function App() {
         {/* Публичное */}
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/forgot" element={<ForgotPasswordPage />} />
+        {/* Ссылки из писем: приглашение и сброс пароля. Вход не нужен. */}
+        <Route path="/invite/:token" element={<SetPasswordPage />} />
+        <Route path="/reset/:token" element={<SetPasswordPage />} />
         {/* Ссылка для учеников: вход не нужен */}
         <Route path="/t/:code" element={<StudentTestPage />} />
 
