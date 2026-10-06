@@ -116,8 +116,14 @@ class VariantProblem(Exception):
 # =====================================================================
 
 
-def format_rule(answer_format: str) -> str:
+def format_rule(answer_format: str, stress: bool = False) -> str:
     """Понятное ИИ описание формата ответа (как в промте на фронтенде)."""
+    if answer_format == "choice" and stress:
+        # У слова из двух слогов четырёх разных ударений не бывает.
+        return (
+            '"format": "choice", от 2 до 4 вариантов ответа в "options" '
+            'и номер верного в "correct" (с нуля)'
+        )
     if answer_format == "choice":
         return (
             '"format": "choice", 4 варианта ответа в "options" '
@@ -227,7 +233,7 @@ def skill_messages(
         f"Предмет и тема: {subject_line(request)}",
         f"Класс: {request.get('grade', '').strip() or 'не указан'}",
         f"Проверяемое умение: {skill['title']}",
-        f"Формат ответа: {format_rule(skill['answer_format'])}",
+        f"Формат ответа: {format_rule(skill['answer_format'], is_stress_skill(skill['title']))}",
         f"Варианты: {variant_list(variant_numbers)} "
         f"(всего вариантов в работе: {request['variants_count']}).",
         f"В КАЖДОМ варианте заданий на это умение: ровно {count}.",
@@ -289,7 +295,7 @@ def task_messages(
         f"Предмет и тема: {subject_line(request)}",
         f"Класс: {request.get('grade', '').strip() or 'не указан'}",
         f"Проверяемое умение: {skill['title']}",
-        f"Формат ответа: {format_rule(skill['answer_format'])}",
+        f"Формат ответа: {format_rule(skill['answer_format'], is_stress_skill(skill['title']))}",
         f"Это задание для варианта {request['variant_no']}.",
         "",
         "Задание, которое нужно заменить (новое должно проверять то же умение и быть "
@@ -341,6 +347,12 @@ def check_messages(request: dict, task: dict) -> list[dict]:
             "В ответе напиши ТОЛЬКО окончательный ответ — число или несколько слов, "
             "без решения и пояснений."
         )
+        if case_only_answer(task):
+            # Как записать ударение — не подсказка: какая гласная ударная, модель решает сама.
+            user += (
+                " Если нужно поставить ударение, напиши слово строчными буквами, "
+                "а ударную гласную — ЗАГЛАВНОЙ."
+            )
     return [
         {"role": "system", "content": "Ты внимательно решаешь школьные задания."},
         {"role": "user", "content": user},
@@ -1237,6 +1249,8 @@ def generate_chunk(run: JobRun, skill_index: int, variant_numbers: list[int]) ->
                 f" Ответ оборван по лимиту AI_GEN_MAX_TOKENS={settings.ai_gen_max_tokens} "
                 f"({tokens}{thinking})."
             )
+        # Оборванный ответ на несколько вариантов не повторяем как есть, а делим.
+        split = truncated and len(missing) > 1 and not give_up
         last_try = attempt == GEN_RETRIES or give_up
         logger.warning(
             "Генерация %s, %s: ответ не подошёл — %s.%s Не хватает вариантов: %s. %s",
@@ -1245,13 +1259,17 @@ def generate_chunk(run: JobRun, skill_index: int, variant_numbers: list[int]) ->
             previous_error,
             detail,
             variant_list(missing),
-            "Повторов больше не будет." if last_try else f"Повтор {attempt + 1} из {GEN_RETRIES}.",
+            "Просим варианты по частям."
+            if split
+            else "Повторов больше не будет."
+            if last_try
+            else f"Повтор {attempt + 1} из {GEN_RETRIES}.",
         )
         need = missing
         if give_up:
             break
 
-        if truncated and len(need) > 1:
+        if split:
             # Ответ не влезает в лимит — просим варианты двумя частями.
             half = (len(need) + 1) // 2
             logger.warning(
@@ -1404,6 +1422,7 @@ def run_task_job(job_id: int, teacher_id: int) -> None:
         label = f"замена: умение {request['skill_index']}, вариант {request['variant_no']}"
 
         for attempt in range(1 + GEN_RETRIES):
+            reason = ""
             try:
                 with http_slots():
                     result = chat(
@@ -1420,9 +1439,11 @@ def run_task_job(job_id: int, teacher_id: int) -> None:
             except VariantProblem as problem:
                 previous_error = str(problem)
             except AIError as error:
-                if error.fatal or attempt == GEN_RETRIES:
+                # Связь не появилась за все повторы — ещё заходы ничего не дадут.
+                if error.fatal or error.exhausted or attempt == GEN_RETRIES:
                     raise
                 previous_error = ""
+                reason = error.reason
             except Exception as exc:  # noqa: BLE001
                 previous_error = "ответ ИИ не удалось разобрать"
                 logger.warning(
@@ -1432,6 +1453,16 @@ def run_task_job(job_id: int, teacher_id: int) -> None:
                     str(exc)[:200],
                     exc_info=True,
                 )
+            # Почему понадобился повтор — как в generate_chunk.
+            logger.warning(
+                "Генерация %s, %s: ответ не подошёл — %s. %s",
+                job_id,
+                label,
+                (previous_error or reason)[:300],
+                "Повторов больше не будет."
+                if attempt == GEN_RETRIES
+                else f"Повтор {attempt + 1} из {GEN_RETRIES}.",
+            )
 
         if task is None:
             fail(f"ИИ не справился за {1 + GEN_RETRIES} попытки: {previous_error}")

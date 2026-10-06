@@ -44,7 +44,11 @@ const SCHOOL_NOTATION =
 const PLACEHOLDER_GRADE = '[КЛАСС]'
 
 /** Понятное ИИ описание формата ответа. */
-function formatRule(format: AnswerFormat): string {
+function formatRule(format: AnswerFormat, stress = false): string {
+  if (format === 'choice' && stress) {
+    // У слова из двух слогов четырёх разных ударений не бывает.
+    return '"format": "choice", от 2 до 4 вариантов ответа в "options" и номер верного в "correct" (с нуля)'
+  }
   return format === 'choice'
     ? '"format": "choice", 4 варианта ответа в "options" и номер верного в "correct" (с нуля)'
     : '"format": "input", список допустимых ответов в "answers"'
@@ -56,7 +60,7 @@ function skillsBlock(skills: SkillDraft[]): string {
     .map(
       (skill, index) =>
         `${index + 1}. ${skill.title} — заданий в каждом варианте: ` +
-        `${skill.tasksPerVariant}, формат: ${formatRule(skill.answerFormat)}.` +
+        `${skill.tasksPerVariant}, формат: ${formatRule(skill.answerFormat, /ударен|орфоэп/i.test(skill.title))}.` +
         stressRule(skill),
     )
     .join('\n')
@@ -152,7 +156,7 @@ export function buildReplacePrompt(
 Предмет и тема: ${subject}
 Класс: ${grade}
 Проверяемое умение: ${skill.title}
-Формат ответа: ${formatRule(skill.answerFormat)}
+Формат ответа: ${formatRule(skill.answerFormat, /ударен|орфоэп/i.test(skill.title))}
 Это задание для варианта ${variantNo}.
 
 Задание, которое нужно заменить (новое должно проверять то же умение,
