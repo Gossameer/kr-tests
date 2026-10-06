@@ -4,6 +4,9 @@
  */
 
 import type {
+  UserRole,
+  AdminLogEntry,
+  ClassLink,
   AdminAiOverview,
   AiJob,
   AiStatus,
@@ -146,16 +149,37 @@ export async function startAttempt(
   code: string,
   studentName: string,
   studentClass: string,
+  deviceId: string,
 ): Promise<StartedAttempt> {
   const response = await request(
     `${API_URL}/api/public/tests/${encodeURIComponent(code)}/start`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ student_name: studentName, student_class: studentClass }),
+      body: JSON.stringify({
+        student_name: studentName,
+        student_class: studentClass,
+        device_id: deviceId,
+      }),
     },
   )
   return parse<StartedAttempt>(response)
+}
+
+/**
+ * POST /api/public/tests/{code}/attempts/{id}/check — действует ли ещё попытка,
+ * которую помнит браузер. «gone» — учитель разрешил пересдачу или удалил её.
+ */
+export async function checkAttempt(
+  code: string,
+  attemptId: number,
+  attemptToken: string,
+): Promise<'active' | 'gone'> {
+  const response = await postJson(
+    `${API_URL}/api/public/tests/${encodeURIComponent(code)}/attempts/${attemptId}/check`,
+    { attempt_token: attemptToken },
+  )
+  return (await parse<{ state: 'active' | 'gone' }>(response)).state
 }
 
 /** POST /api/public/tests/{code}/attempts/{id}/submit — сдать работу. */
@@ -213,6 +237,35 @@ export async function updateTestSettings(
     body: JSON.stringify({ is_open: isOpen }),
   })
   return parse<{ is_open: boolean }>(response)
+}
+
+/** POST /api/tests/{id}/classes — добавить класс: у него появится своя ссылка. */
+export async function addTestClass(testId: number, className: string): Promise<ClassLink> {
+  return parse<ClassLink>(
+    await postJson(`${API_URL}/api/tests/${testId}/classes`, { class_name: className }),
+  )
+}
+
+/** PATCH /api/tests/{id}/classes/{classId} — открыть или закрыть приём по классу. */
+export async function updateTestClass(
+  testId: number,
+  classId: number,
+  isOpen: boolean,
+): Promise<ClassLink> {
+  const response = await request(`${API_URL}/api/tests/${testId}/classes/${classId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_open: isOpen }),
+  })
+  return parse<ClassLink>(response)
+}
+
+/** POST /api/tests/{id}/attempts/{attemptId}/annul — разрешить пересдачу. */
+export async function annulAttempt(testId: number, attemptId: number): Promise<void> {
+  const response = await postJson(`${API_URL}/api/tests/${testId}/attempts/${attemptId}/annul`)
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
 }
 
 /** DELETE /api/tests/{id}/attempts/{attemptId} — удалить работу ученика. */
@@ -306,6 +359,21 @@ export async function setTeacherActive(
   return parse<TeacherRow>(response)
 }
 
+/** PUT /api/admin/teachers/{id}/role — выдать или снять права администратора. */
+export async function setTeacherRole(userId: number, role: UserRole): Promise<TeacherRow> {
+  const response = await request(`${API_URL}/api/admin/teachers/${userId}/role`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  })
+  return parse<TeacherRow>(response)
+}
+
+/** GET /api/admin/log — журнал выдачи прав администратора. */
+export async function fetchAdminLog(): Promise<AdminLogEntry[]> {
+  return parse<AdminLogEntry[]>(await request(`${API_URL}/api/admin/log`))
+}
+
 export async function resetTeacherPassword(userId: number): Promise<PasswordReset> {
   const response = await request(
     `${API_URL}/api/admin/teachers/${userId}/reset-password`,
@@ -333,19 +401,24 @@ export async function updateSchoolSettings(
   return parse<SchoolSettings>(response)
 }
 
-/** GET /api/admin/stats — статистика по школе с фильтрами. */
+/**
+ * GET /api/stats — статистика с фильтрами. Учителю сервер отдаёт только его
+ * работы, администратору — всю школу.
+ */
 export async function fetchSchoolStats(filters: {
   days?: number
   subject?: string
   studentClass?: string
+  testId?: number
 }): Promise<SchoolStats> {
   const query = new URLSearchParams()
   if (filters.days) query.set('days', String(filters.days))
   if (filters.subject) query.set('subject', filters.subject)
   if (filters.studentClass) query.set('student_class', filters.studentClass)
+  if (filters.testId) query.set('test_id', String(filters.testId))
 
   const suffix = query.toString() ? `?${query.toString()}` : ''
-  return parse<SchoolStats>(await request(`${API_URL}/api/admin/stats${suffix}`))
+  return parse<SchoolStats>(await request(`${API_URL}/api/stats${suffix}`))
 }
 
 /* ===================== Генерация через ИИ ===================== */

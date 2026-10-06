@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
+  fetchAdminLog,
   fetchMailOverview,
   fetchTeachers,
   importTeachers,
@@ -22,11 +23,13 @@ import {
   previewTeacherImport,
   resetTeacherPassword,
   setTeacherActive,
+  setTeacherRole,
 } from '../api'
 import { useAuth } from '../lib/authContext'
 import { plural } from '../lib/checklist'
 import { usePageTitle } from '../lib/usePageTitle'
 import type {
+  AdminLogEntry,
   ImportPreview,
   ImportResult,
   ImportRow,
@@ -118,6 +121,7 @@ export default function AdminTeachersPage() {
   const { user } = useAuth()
   const [loading, setLoading] = useState<Loading>({ kind: 'loading' })
   const [mail, setMail] = useState<MailOverview | null>(null)
+  const [roleLog, setRoleLog] = useState<AdminLogEntry[]>([])
   const [actionError, setActionError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -147,6 +151,9 @@ export default function AdminTeachersPage() {
     fetchMailOverview()
       .then(setMail)
       .catch(() => setMail(null))
+    fetchAdminLog()
+      .then(setRoleLog)
+      .catch(() => setRoleLog([]))
   }, [])
 
   useEffect(load, [load])
@@ -276,6 +283,28 @@ export default function AdminTeachersPage() {
     void run(async () => {
       await setTeacherActive(teacher.id, !teacher.is_active)
     }, 'Не удалось изменить доступ')
+  }
+
+  function handleRole(teacher: TeacherRow) {
+    const grant = teacher.role !== 'admin'
+    const confirmed = window.confirm(
+      grant
+        ? `Сделать «${teacher.full_name}» администратором?\n\n` +
+            'Администратор видит все работы и результаты школы, управляет учётными ' +
+            'записями учителей и может выдавать права другим.'
+        : `Снять права администратора с «${teacher.full_name}»?\n\n` +
+            'Человек останется учителем: его работы и результаты сохранятся, но разделы ' +
+            'администратора ему закроются.',
+    )
+    if (!confirmed) {
+      return
+    }
+    void run(async () => {
+      await setTeacherRole(teacher.id, grant ? 'admin' : 'teacher')
+      return grant
+        ? `«${teacher.full_name}» теперь администратор.`
+        : `С «${teacher.full_name}» сняты права администратора.`
+    }, 'Не удалось изменить права')
   }
 
   function handleReset(teacher: TeacherRow) {
@@ -638,6 +667,22 @@ export default function AdminTeachersPage() {
                               Сбросить пароль
                             </button>
                           )}
+                          {teacher.is_active && teacher.state === 'active' && (
+                            <button
+                              type="button"
+                              className="btn btn--small btn--ghost"
+                              onClick={() => handleRole(teacher)}
+                              // С себя права снять нельзя — сервер это тоже не разрешит.
+                              disabled={busy || teacher.id === user?.id}
+                              title={
+                                teacher.id === user?.id
+                                  ? 'С себя права снять нельзя — попросите другого администратора'
+                                  : undefined
+                              }
+                            >
+                              {teacher.role === 'admin' ? 'Снять права' : 'Сделать админом'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn--small btn--ghost"
@@ -663,6 +708,41 @@ export default function AdminTeachersPage() {
             «Скопировать ссылку» и передайте её сами. Приглашение действует 7 дней; новое
             отменяет прежнее.
           </p>
+        </section>
+      )}
+
+      {/* ------------------------- Журнал прав ------------------------- */}
+      {roleLog.length > 0 && (
+        <section className="card">
+          <details className="details" id="role-log">
+            <summary>Журнал прав администратора ({roleLog.length})</summary>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Когда</th>
+                    <th>Кто</th>
+                    <th>Что сделал</th>
+                    <th>Кому</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roleLog.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>{formatDateTime(entry.created_at)}</td>
+                      <td>{entry.admin_name}</td>
+                      <td>
+                        {entry.action === 'grant_admin'
+                          ? 'выдал права администратора'
+                          : 'снял права администратора'}
+                      </td>
+                      <td>{entry.target_name}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
         </section>
       )}
 

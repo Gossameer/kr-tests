@@ -1,11 +1,14 @@
 /**
- * Страница результатов для учителя: /r/:token
+ * Страница работы для учителя: /tests/:testId/results
  *
  * Главное здесь — не баллы, а таблица «ученик × умение»: видно, какое умение
  * не сформировано у конкретного ребёнка и у класса целиком.
  *
- * Доступ по секретной ссылке — авторизации пока нет, поэтому адрес нельзя
- * показывать ученикам: по нему видны ответы, решения и управление работой.
+ * Здесь же управление работой: у каждого класса своя ссылка для учеников и свой
+ * переключатель «приём открыт»; попытке можно разрешить пересдачу — старая
+ * остаётся с отметкой «аннулирована» и в итоги не идёт.
+ *
+ * Доступ — у автора работы и администратора; права проверяет сервер.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -13,16 +16,19 @@ import { useNavigate, useParams } from 'react-router'
 import {
   NETWORK_ERROR,
   SERVER_ERROR,
+  addTestClass,
+  annulAttempt,
   deleteAttempt,
   deleteTest,
   fetchAttemptDetail,
   fetchResults,
   resultsExportUrl,
+  updateTestClass,
   updateTestSettings,
 } from '../api'
 import CopyLink from '../components/CopyLink'
 import MathText from '../components/MathText'
-import type { AttemptDetail, AttemptRow, ResultsOverview, SkillStat } from '../types'
+import type { AttemptDetail, AttemptRow, ClassLink, ResultsOverview, SkillStat } from '../types'
 import { usePageTitle } from '../lib/usePageTitle'
 
 type Loading =
@@ -74,6 +80,69 @@ function averagePercent(attempts: AttemptRow[], skillId: number): number | undef
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
 }
 
+/** Строка класса: ссылка, «Скопировать», число сдавших, приём работ. */
+function ClassLinkRow({
+  link,
+  busy,
+  onToggle,
+}: {
+  link: ClassLink
+  busy: boolean
+  onToggle: (link: ClassLink) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const url = `${window.location.origin}/t/${link.code}`
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Браузер не дал доступ к буферу (например, без https) — показываем ссылку.
+      window.prompt(`Скопируйте ссылку для класса ${link.class_name}:`, url)
+    }
+  }
+
+  return (
+    <tr>
+      <td>
+        <b>{link.class_name}</b>
+      </td>
+      <td>
+        <div className="row row--tight">
+          <input
+            className="linkbox"
+            value={url}
+            readOnly
+            aria-label={`Ссылка для класса ${link.class_name}`}
+            onFocus={(event) => event.target.select()}
+          />
+          <button type="button" className="btn btn--small btn--primary" onClick={handleCopy}>
+            {copied ? 'Скопировано' : 'Скопировать'}
+          </button>
+        </div>
+      </td>
+      <td>{link.attempts_count}</td>
+      <td>
+        <div className="row row--tight">
+          <span className={link.is_open ? 'badge badge--open' : 'badge badge--closed'}>
+            {link.is_open ? 'открыт' : 'закрыт'}
+          </span>
+          <button
+            type="button"
+            className="btn btn--small btn--ghost"
+            onClick={() => onToggle(link)}
+            disabled={busy}
+          >
+            {link.is_open ? 'Закрыть приём' : 'Открыть приём'}
+          </button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
 export default function ResultsPage() {
   usePageTitle('Результаты')
   // Проверочная работа определяется её номером, а права проверяет сервер:
@@ -90,6 +159,7 @@ export default function ResultsPage() {
   const [busy, setBusy] = useState(false)
   // Фильтр по классу: пустая строка — показывать всех.
   const [classFilter, setClassFilter] = useState('')
+  const [newClass, setNewClass] = useState('')
 
   const load = useCallback(() => {
     fetchResults(testId)
@@ -114,6 +184,8 @@ export default function ResultsPage() {
     }
     return loading.data.attempts.filter((attempt) => attempt.student_class === classFilter)
   }, [loading, classFilter])
+  // В умения и итоги идут только действующие попытки: аннулированные — нет.
+  const counted = useMemo(() => shown.filter((attempt) => !attempt.annulled), [shown])
 
   function handleRefresh() {
     setDetails({})
@@ -158,10 +230,67 @@ export default function ResultsPage() {
     }
   }
 
+  async function handleToggleClass(link: ClassLink) {
+    setBusy(true)
+    setActionError('')
+    try {
+      await updateTestClass(testId, link.id, !link.is_open)
+      load()
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : 'Не удалось изменить приём работ')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleAddClass() {
+    const name = newClass.trim()
+    if (name === '') {
+      document.getElementById('new-class')?.focus()
+      return
+    }
+    setBusy(true)
+    setActionError('')
+    try {
+      await addTestClass(testId, name)
+      setNewClass('')
+      load()
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : 'Не удалось добавить класс')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleAnnul(attemptId: number, studentName: string) {
+    const confirmed = window.confirm(
+      `Разрешить пересдачу: «${studentName}»?\n\n` +
+        'Эта попытка получит отметку «аннулирована» и перестанет учитываться в умениях, ' +
+        'итогах, статистике и Excel. Ученик сможет пройти работу заново по той же ссылке, ' +
+        'в том числе с того же устройства.',
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setBusy(true)
+    setActionError('')
+    try {
+      await annulAttempt(testId, attemptId)
+      setOpenAttemptId(null)
+      load()
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : 'Не удалось разрешить пересдачу')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handleDeleteAttempt(attemptId: number, studentName: string) {
     const confirmed = window.confirm(
-      `Удалить работу «${studentName}»?\n\n` +
-        'Ответы будут удалены безвозвратно, зато ученик сможет пройти работу заново.',
+      `Удалить работу «${studentName}» совсем?\n\n` +
+        'Ответы будут удалены безвозвратно. Если нужна только пересдача — нажмите ' +
+        '«Разрешить пересдачу»: тогда прежняя работа сохранится в истории.',
     )
     if (!confirmed) {
       return
@@ -242,7 +371,7 @@ export default function ResultsPage() {
         correct: stat?.correct ?? 0,
         total: stat?.total ?? 0,
         percent: stat?.percent ?? 0,
-        shownPercent: averagePercent(shown, skill.id),
+        shownPercent: averagePercent(counted, skill.id),
       }
     })
     .sort((a, b) => (a.shownPercent ?? 101) - (b.shownPercent ?? 101))
@@ -278,24 +407,83 @@ export default function ResultsPage() {
           </div>
         </div>
 
-        <div className="switchrow">
-          <span className={data.is_open ? 'badge badge--open' : 'badge badge--closed'}>
-            {data.is_open ? 'Открыт' : 'Закрыт'}
-          </span>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => handleToggleOpen(!data.is_open)}
-            disabled={busy}
-          >
-            {data.is_open ? 'Закрыть приём' : 'Открыть приём'}
-          </button>
-          <span className="hint">
-            {data.is_open
-              ? 'Ученики могут начинать и сдавать работы по ссылке.'
-              : 'Ученики видят сообщение «приём работ закрыт». Сданные работы сохранены.'}
-          </span>
+        {/* ---------- Ссылки по классам ---------- */}
+        <div id="class-links" tabIndex={-1}>
+          <p className="muted">
+            У каждого класса своя ссылка: класс уже задан, ученик вводит только фамилию и
+            имя. Приём открывается и закрывается по каждому классу отдельно.
+          </p>
+          <div className="table-scroll">
+            <table className="table classlinks">
+              <thead>
+                <tr>
+                  <th>Класс</th>
+                  <th>Ссылка для учеников</th>
+                  <th>Сдали</th>
+                  <th>Приём работ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.class_links.map((link) => (
+                  <ClassLinkRow key={link.id} link={link} busy={busy} onToggle={handleToggleClass} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="row row--tight">
+            <label className="label" htmlFor="new-class">
+              Добавить класс
+            </label>
+            <input
+              id="new-class"
+              className="input input--short"
+              value={newClass}
+              onChange={(event) => setNewClass(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  void handleAddClass()
+                }
+              }}
+              placeholder="Например: 6В"
+              maxLength={20}
+            />
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => void handleAddClass()}
+              disabled={busy}
+            >
+              Добавить — появится новая ссылка
+            </button>
+          </div>
+          <p className="hint">
+            С одного устройства по ссылке класса можно сдать одну работу, и один ученик
+            сдаёт в своём классе один раз. Другой класс по своей ссылке проходит работу на
+            тех же компьютерах свободно. Пересдача — кнопкой «Разрешить пересдачу» в списке
+            работ ниже.
+          </p>
         </div>
+
+        {/* ---------- Общая ссылка старой работы ---------- */}
+        {!data.links_by_class && (
+          <div className="switchrow">
+            <span className={data.is_open ? 'badge badge--open' : 'badge badge--closed'}>
+              {data.is_open ? 'Открыт' : 'Закрыт'}
+            </span>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => handleToggleOpen(!data.is_open)}
+              disabled={busy}
+            >
+              {data.is_open ? 'Закрыть приём целиком' : 'Открыть приём целиком'}
+            </button>
+            <span className="hint">
+              Общая ссылка этой работы (она внизу страницы) и ссылки всех классов разом.
+            </span>
+          </div>
+        )}
       </section>
 
       {/* ------------------------- Фильтр по классу ------------------------- */}
@@ -328,7 +516,7 @@ export default function ResultsPage() {
       <section className="card">
         <h2>Умения</h2>
 
-        {shown.length === 0 ? (
+        {counted.length === 0 ? (
           <p className="empty">
             {data.attempts_count === 0
               ? 'Пока никто не сдал. Отправьте ученикам ссылку и нажмите «Обновить».'
@@ -355,7 +543,7 @@ export default function ResultsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((attempt) => (
+                  {counted.map((attempt) => (
                     <tr key={attempt.attempt_id}>
                       <td className="matrix__skill">
                         <span className="matrix__title">{attempt.student_name}</span>
@@ -383,10 +571,10 @@ export default function ResultsPage() {
                   <tr className="matrix__total">
                     <td>
                       <b>{classFilter === '' ? 'Все классы' : classFilter}</b>{' '}
-                      <span className="hint">учеников: {shown.length}</span>
+                      <span className="hint">учеников: {counted.length}</span>
                     </td>
                     {data.skills.map((skill) => {
-                      const average = averagePercent(shown, skill.id)
+                      const average = averagePercent(counted, skill.id)
                       return (
                         <td key={skill.id}>
                           <span className={levelClass(average)}>
@@ -397,10 +585,11 @@ export default function ResultsPage() {
                     })}
                     <td>
                       <b>
-                        {shown.length === 0
+                        {counted.length === 0
                           ? '—'
                           : `${Math.round(
-                              shown.reduce((sum, item) => sum + item.percent, 0) / shown.length,
+                              counted.reduce((sum, item) => sum + item.percent, 0) /
+                                counted.length,
                             )}%`}
                       </b>
                     </td>
@@ -413,7 +602,7 @@ export default function ResultsPage() {
       </section>
 
       {/* ------------------------- Не сформированные умения ------------------------- */}
-      {shown.length > 0 && (
+      {counted.length > 0 && (
         <section className="card">
           <h2>Что не сформировано</h2>
           <p className="muted">Сверху — умения, с которыми справились хуже всего.</p>
@@ -480,13 +669,25 @@ export default function ResultsPage() {
                     return [
                       <tr
                         key={attempt.attempt_id}
-                        className={isOpen ? 'table__row table__row--open' : 'table__row'}
+                        className={
+                          'table__row' +
+                          (isOpen ? ' table__row--open' : '') +
+                          (attempt.annulled ? ' table__row--annulled' : '')
+                        }
                         onClick={() => handleRowClick(attempt.attempt_id)}
                       >
                         <td>{attempt.student_class}</td>
                         <td>
                           <span className="caret">{isOpen ? '▾' : '▸'}</span>{' '}
                           {attempt.student_name}
+                          {attempt.annulled && (
+                            <span
+                              className="badge badge--closed"
+                              title="Разрешена пересдача: в умения, итоги и статистику эта попытка не идёт"
+                            >
+                              аннулирована
+                            </span>
+                          )}
                         </td>
                         <td>{attempt.variant_no}</td>
                         <td>
@@ -495,10 +696,25 @@ export default function ResultsPage() {
                         <td>{attempt.percent}%</td>
                         <td>{formatDateTime(attempt.finished_at)}</td>
                         <td>
+                          <div className="rowactions">
+                          {!attempt.annulled && (
+                            <button
+                              type="button"
+                              className="btn btn--small btn--ghost"
+                              disabled={busy}
+                              onClick={(event) => {
+                                // Иначе клик дойдёт до строки и раскроет разбор.
+                                event.stopPropagation()
+                                handleAnnul(attempt.attempt_id, attempt.student_name)
+                              }}
+                            >
+                              Разрешить пересдачу
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="iconbtn iconbtn--danger"
-                            title="Удалить работу и разрешить пересдачу"
+                            title="Удалить работу совсем (вместе с ответами)"
                             aria-label={`Удалить работу ${attempt.student_name}`}
                             disabled={busy}
                             onClick={(event) => {
@@ -509,6 +725,7 @@ export default function ResultsPage() {
                           >
                             ✕
                           </button>
+                          </div>
                         </td>
                       </tr>,
 
@@ -574,15 +791,17 @@ export default function ResultsPage() {
         )}
       </section>
 
-      {/* ------------------------- Ссылка ученикам ------------------------- */}
-      <section className="card">
-        <h2>Ссылка для учеников</h2>
-        <CopyLink
-          label="Отправьте её классу"
-          url={studentUrl}
-          hint="Вариант выдаётся каждому ученику автоматически. Вход ученикам не нужен."
-        />
-      </section>
+      {/* ------------------------- Общая ссылка (старые работы) ------------------------- */}
+      {!data.links_by_class && (
+        <section className="card">
+          <h2>Общая ссылка для учеников</h2>
+          <CopyLink
+            label="Работает как раньше: ученик сам выбирает класс из списка"
+            url={studentUrl}
+            hint="Эта работа создана до ссылок по классам. Удобнее раздавать ссылки классов — они выше."
+          />
+        </section>
+      )}
 
       {/* ------------------------- Опасная зона ------------------------- */}
       <section className="card card--danger">

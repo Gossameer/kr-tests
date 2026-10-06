@@ -276,11 +276,23 @@ class TestCreate(BaseModel):
         return self
 
 
+class ClassLinkOut(BaseModel):
+    """Ссылка работы для одного класса: /t/<code>."""
+
+    id: int
+    class_name: str
+    code: str
+    is_open: bool = True
+    # Сколько работ сдано в этом классе (аннулированные не в счёт).
+    attempts_count: int = 0
+
+
 class TestCreated(BaseModel):
     """Ответ на POST /api/tests."""
 
     id: int
-    code: str = Field(description="Короткий код для ссылки ученикам")
+    code: str = Field(description="Общий код работы (у новых работ ссылки — по классам)")
+    class_links: list[ClassLinkOut] = []
     title: str
     variants_count: int
     skills_count: int
@@ -301,6 +313,8 @@ class PublicTestInfo(BaseModel):
     title: str
     teacher_name: str
     classes: list[str]
+    # Класс задан ссылкой (ссылка класса) — ученик вводит только ФИО.
+    class_name: str | None = None
     is_open: bool
     tasks_count: int
 
@@ -326,7 +340,16 @@ class StartAttemptIn(BaseModel):
     """Тело POST /api/public/tests/{code}/start."""
 
     student_name: str
-    student_class: str
+    # По ссылке класса не нужен: класс задан самой ссылкой.
+    student_class: str = ""
+    # Случайная метка устройства из памяти браузера: одна сданная работа
+    # с устройства в рамках одной классовой ссылки.
+    device_id: str = ""
+
+    @field_validator("device_id")
+    @classmethod
+    def check_device(cls, value: str) -> str:
+        return value.strip()[:64]
 
     @field_validator("student_name")
     @classmethod
@@ -343,8 +366,6 @@ class StartAttemptIn(BaseModel):
     @classmethod
     def check_class(cls, value: str) -> str:
         cleaned = normalize_class_name(value)
-        if not cleaned:
-            raise ValueError("выберите класс")
         if len(cleaned) > MAX_STUDENT_CLASS_LEN:
             raise ValueError(f"слишком длинное, максимум {MAX_STUDENT_CLASS_LEN} символов")
         return cleaned
@@ -366,6 +387,12 @@ class StartAttemptOut(BaseModel):
     title: str
     shuffle: bool
     tasks: list[PublicTaskOut]
+
+
+class AttemptCheckIn(BaseModel):
+    """Тело проверки «действует ли ещё попытка»."""
+
+    attempt_token: str
 
 
 class SubmitAttemptIn(BaseModel):
@@ -429,6 +456,9 @@ class AttemptRow(BaseModel):
     max_score: int
     percent: int
     finished_at: datetime | None
+    # Учитель разрешил пересдачу: попытка осталась для истории, но в умения,
+    # итоги и статистику не идёт.
+    annulled: bool = False
     # {id умения: процент выполнения} — основа матрицы «ученик × умение».
     skill_percents: dict[int, int]
 
@@ -455,6 +485,10 @@ class ResultsOverview(BaseModel):
     classes: list[str]
     variants_count: int
     is_open: bool
+    # TRUE — у работы ссылки только по классам; FALSE — работа создана раньше,
+    # у неё есть ещё и общая ссылка (code) с выбором класса.
+    links_by_class: bool = False
+    class_links: list[ClassLinkOut] = []
     skills: list[SkillOut]
     attempts_count: int
     attempts: list[AttemptRow]
@@ -494,6 +528,28 @@ class TestSettingsUpdate(BaseModel):
     """Тело PATCH /api/tests/{test_id}: открыть или закрыть приём работ."""
 
     is_open: bool
+
+
+class ClassLinkUpdate(BaseModel):
+    """Тело PATCH /api/tests/{id}/classes/{class_id}: приём по одному классу."""
+
+    is_open: bool
+
+
+class ClassLinkCreate(BaseModel):
+    """Тело POST /api/tests/{id}/classes: добавить класс к опубликованной работе."""
+
+    class_name: str
+
+    @field_validator("class_name")
+    @classmethod
+    def check_class(cls, value: str) -> str:
+        cleaned = normalize_class_name(value)
+        if not cleaned:
+            raise ValueError("укажите класс, например 6А")
+        if len(cleaned) > MAX_CLASS_LEN:
+            raise ValueError(f"название класса длиннее {MAX_CLASS_LEN} символов")
+        return cleaned
 
 
 class ResultsOverviewSettings(BaseModel):
@@ -605,6 +661,12 @@ class TeacherUpdate(BaseModel):
     is_active: bool
 
 
+class RoleUpdate(BaseModel):
+    """Тело PUT /api/admin/teachers/{id}/role: выдать или снять права администратора."""
+
+    role: Literal["teacher", "admin"]
+
+
 class SettingsOut(BaseModel):
     """Настройки школы."""
 
@@ -643,6 +705,7 @@ class MyTestRow(BaseModel):
     is_open: bool
     created_at: datetime
     attempts_count: int
+    links_by_class: bool = False
     # Кто автор — нужно администратору, который видит чужие проверочные работы.
     teacher_name: str
     teacher_id: int

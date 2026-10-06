@@ -3,8 +3,7 @@
 
 Настоящий ИИ-сервис не трогаем: вместо него — заглушка на 127.0.0.1, которая
 отвечает по сценарию теста (обрыв соединения, 429, 503, битый JSON, обрезка).
-База — временная: создаётся рядом с рабочей (тот же сервер и пользователь из
-DATABASE_URL), в неё накатываются миграции, в конце она удаляется.
+База — временная (см. tests/support.py).
 
 Запуск (из папки backend):
 
@@ -12,120 +11,13 @@ DATABASE_URL), в неё накатываются миграции, в конц�
 """
 
 import json
-import os
-import pathlib
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import psycopg
 
-BACKEND = pathlib.Path(__file__).resolve().parent.parent
-
-
-# ---------------------------------------------------------------------
-# Заглушка ИИ-сервиса
-# ---------------------------------------------------------------------
-
-
-class Stub:
-    """Сценарий заглушки: функция «запрос → действие» и счётчик запросов."""
-
-    def __init__(self) -> None:
-        self.script = lambda payload, kind: ok("")
-        self.requests: list[tuple[str, dict]] = []
-        self.lock = threading.Lock()
-
-    def reset(self, script) -> None:
-        with self.lock:
-            self.script = script
-            self.requests = []
-
-    def count(self, kind: str) -> int:
-        with self.lock:
-            return sum(1 for item, _ in self.requests if item == kind)
-
-
-stub = Stub()
-
-
-def ok(text: str, finish: str = "stop", tokens: int = 50) -> tuple:
-    return (
-        200,
-        {
-            "choices": [{"finish_reason": finish, "message": {"content": text}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": tokens},
-        },
-    )
-
-
-DROP = ("drop",)
-
-
-def http_error(status: int) -> tuple:
-    return (status, {"error": {"message": f"stub {status}"}})
-
-
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def do_POST(self) -> None:  # noqa: N802
-        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        system = payload["messages"][0]["content"]
-        kind = "check" if "решаешь" in system else "generate"
-        with stub.lock:
-            stub.requests.append((kind, payload))
-            script = stub.script
-        action = script(payload, kind)
-
-        if action == DROP:
-            # Обрыв без ответа — как SSL EOF или сброс соединения.
-            self.close_connection = True
-            self.connection.close()
-            return
-        status, body = action
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *args) -> None:
-        pass
-
-
-# ---------------------------------------------------------------------
-# Временная база и настройки — ДО импорта приложения
-# ---------------------------------------------------------------------
-
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-
-
-def _real_database_url() -> str:
-    if os.environ.get("TEST_DATABASE_SERVER"):
-        return os.environ["TEST_DATABASE_SERVER"]
-    for line in (BACKEND / ".env").read_text(encoding="utf-8").splitlines():
-        if line.startswith("DATABASE_URL="):
-            return line.split("=", 1)[1].strip()
-    return "postgresql://postgres:postgres@localhost:5432/kr_tests"
-
-
-_base, _, _ = _real_database_url().rpartition("/")
-TEMP_DB = f"kr_tests_tmp_{os.getpid()}"
-
-os.environ.update(
-    DATABASE_URL=f"{_base}/{TEMP_DB}",
-    AI_API_BASE_URL=f"http://127.0.0.1:{server.server_address[1]}/v1",
-    AI_API_KEY="stub-key",
-    AI_MODEL="stub-gen",
-    AI_CHECK_MODEL="stub-check",
-    AI_RETRY_PAUSES="2,5,10",
-    AI_CHECK_MAX_TOKENS="1500",
-    AI_GEN_CHUNK_VARIANTS="4",
-)
+from tests.support import DROP, add_user, http_error, ok, setup_database, stub
 
 from app import ai_client, ai_generation as gen, db  # noqa: E402
 from app.ai_client import AIError, RequestContext  # noqa: E402
@@ -135,24 +27,8 @@ TEACHER_ID = 0
 
 def setUpModule() -> None:
     global TEACHER_ID
-    with psycopg.connect(f"{_base}/postgres", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{TEMP_DB}"')
-    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
-        for path in sorted((BACKEND / "migrations").glob("*.sql")):
-            if not path.name.endswith(".down.sql"):
-                conn.execute(path.read_text(encoding="utf-8"))
-        TEACHER_ID = conn.execute(
-            "INSERT INTO users (full_name, email, password_hash) "
-            "VALUES ('Тест', 'test@example.org', 'x') RETURNING id"
-        ).fetchone()[0]
-
-
-def tearDownModule() -> None:
-    server.shutdown()
-    if db.pool is not None:
-        db.pool.close()
-    with psycopg.connect(f"{_base}/postgres", autocommit=True) as conn:
-        conn.execute(f'DROP DATABASE IF EXISTS "{TEMP_DB}" WITH (FORCE)')
+    setup_database()
+    TEACHER_ID = add_user("Тест", "test-ai@example.org")
 
 
 def journal(kind: str) -> list[dict]:

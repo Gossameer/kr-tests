@@ -1191,7 +1191,7 @@ code {
   /* Названия умений длинные — переносим их вместо сплошной прокрутки. */
   white-space: normal;
   min-width: 96px;
-  max-width: 160px;
+  max-width: 200px;
   vertical-align: bottom;
 }
 
@@ -1928,4 +1928,34 @@ code {
 .taskpreview__solution {
   margin: 0;
   color: var(--muted);
+}
+
+
+/* ===================== Ссылки по классам, пересдача ===================== */
+
+.classlinks .linkbox {
+  min-width: 220px;
+}
+
+.classlinks td {
+  vertical-align: middle;
+}
+
+.input--short {
+  max-width: 200px;
+}
+
+/* Аннулированная попытка: видна в списке, но приглушена. */
+.table__row--annulled td {
+  color: var(--muted);
+}
+
+.table__row--annulled .badge {
+  margin-left: var(--gap-xs);
+}
+
+/* Класс задан ссылкой — на экране «Начать». */
+.fixedclass {
+  margin: var(--gap-m) 0 0;
+  font-size: 1.05rem;
 }

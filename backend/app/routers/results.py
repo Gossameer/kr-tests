@@ -4,8 +4,11 @@
     GET    /api/tests/{id}/results                — таблица учеников и умений
     GET    /api/tests/{id}/attempts/{attempt_id}  — разбор одной работы
     GET    /api/tests/{id}/export.xlsx            — выгрузка в Excel (3 листа)
-    PATCH  /api/tests/{id}                        — открыть/закрыть приём работ
-    DELETE /api/tests/{id}/attempts/{attempt_id}  — удалить работу (разрешить пересдачу)
+    PATCH  /api/tests/{id}                        — открыть/закрыть приём работ целиком
+    POST   /api/tests/{id}/classes                — добавить класс (новая ссылка)
+    PATCH  /api/tests/{id}/classes/{class_id}     — открыть/закрыть приём по классу
+    POST   /api/tests/{id}/attempts/{attempt_id}/annul — разрешить пересдачу
+    DELETE /api/tests/{id}/attempts/{attempt_id}  — удалить работу совсем
     DELETE /api/tests/{id}?confirm_title=...      — удалить проверочную работу целиком
 
 Доступ даёт учётная запись: владелец проверочной работы или администратор. Секретных
@@ -17,13 +20,18 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from psycopg import errors as pg_errors
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from app import db
 from app.auth import can_manage_test, forbidden, require_user
+from app.routers.tests import add_class_link
 from app.schemas import (
     AttemptDetail,
+    ClassLinkCreate,
+    ClassLinkOut,
+    ClassLinkUpdate,
     ResultsOverview,
     ResultsOverviewSettings,
     TestSettingsUpdate,
@@ -84,7 +92,7 @@ def load_test_for_user(conn, test_id: int, user: dict) -> dict:
     row = conn.execute(
         """
         SELECT id, title, subject, teacher_id, teacher_name, share_token,
-               classes, is_open, variants_count
+               classes, is_open, variants_count, links_by_class
         FROM tests
         WHERE id = %s
         """,
@@ -100,6 +108,25 @@ def load_test_for_user(conn, test_id: int, user: dict) -> dict:
     return row
 
 
+def load_class_links(conn, test_id: int) -> list[dict]:
+    """
+    Ссылки по классам с числом сдавших. Порядок — как классы указаны в работе
+    (добавленные позже — в конце).
+    """
+    return conn.execute(
+        """
+        SELECT tc.id, tc.class_name, tc.code, tc.is_open,
+               (SELECT count(*) FROM attempts a
+                 WHERE a.test_id = tc.test_id AND a.student_class = tc.class_name
+                   AND a.finished_at IS NOT NULL AND a.annulled_at IS NULL) AS attempts_count
+        FROM test_classes tc
+        WHERE tc.test_id = %s
+        ORDER BY tc.id
+        """,
+        (test_id,),
+    ).fetchall()
+
+
 def load_skills(conn, test_id: int) -> list[dict]:
     return conn.execute(
         """
@@ -113,14 +140,18 @@ def load_skills(conn, test_id: int) -> list[dict]:
 
 
 def load_attempts(conn, test_id: int) -> list[dict]:
-    """Список сдавших: сортировка по классу, затем по фамилии и имени."""
+    """
+    Все попытки: сортировка по классу, затем по фамилии и имени.
+    Аннулированные тоже здесь (с отметкой) — учитель видит историю пересдач,
+    но в умения, итоги и выгрузку они не идут.
+    """
     return conn.execute(
         """
         SELECT id, student_name, student_class, variant_no,
-               score, max_score, finished_at
+               score, max_score, finished_at, annulled_at IS NOT NULL AS annulled
         FROM attempts
         WHERE test_id = %s
-        ORDER BY student_class, student_name, id
+        ORDER BY student_class, student_name, annulled_at IS NOT NULL, id
         """,
         (test_id,),
     ).fetchall()
@@ -143,7 +174,7 @@ def load_skill_matrix(conn, test_id: int) -> dict[tuple[int, int], dict]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s
+        WHERE att.test_id = %s AND att.annulled_at IS NULL
         GROUP BY ans.attempt_id, t.skill_id
         """,
         (test_id,),
@@ -168,7 +199,7 @@ def load_skill_stats(conn, test_id: int, skills: list[dict]) -> list[dict]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s
+        WHERE att.test_id = %s AND att.annulled_at IS NULL
         GROUP BY t.skill_id
         """,
         (test_id,),
@@ -215,6 +246,7 @@ def get_results(
         attempt_rows = load_attempts(conn, test_row["id"])
         matrix = load_skill_matrix(conn, test_row["id"])
         skill_stats = load_skill_stats(conn, test_row["id"], skills)
+        class_links = load_class_links(conn, test_row["id"])
 
     attempts = []
     for attempt in attempt_rows:
@@ -235,6 +267,7 @@ def get_results(
                 "max_score": attempt["max_score"] or 0,
                 "percent": percent_of(attempt["score"], attempt["max_score"]),
                 "finished_at": attempt["finished_at"],
+                "annulled": attempt["annulled"],
                 "skill_percents": skill_percents,
             }
         )
@@ -248,8 +281,10 @@ def get_results(
         classes=test_row["classes"],
         variants_count=test_row["variants_count"],
         is_open=test_row["is_open"],
+        links_by_class=test_row["links_by_class"],
+        class_links=class_links,
         skills=skills,
-        attempts_count=len(attempts),
+        attempts_count=sum(1 for attempt in attempts if not attempt["annulled"]),
         attempts=attempts,
         skill_stats=skill_stats,
     )
@@ -584,10 +619,15 @@ def update_settings(
     except Exception as exc:  # noqa: BLE001
         raise db_unavailable() from exc
 
-    with pool.connection() as conn:
+    with pool.connection() as conn, conn.transaction():
         test_row = load_test_for_user(conn, test_id, user)
         conn.execute(
             "UPDATE tests SET is_open = %s WHERE id = %s",
+            (payload.is_open, test_row["id"]),
+        )
+        # «Закрыть приём» целиком закрывает и все ссылки классов (и наоборот).
+        conn.execute(
+            "UPDATE test_classes SET is_open = %s WHERE test_id = %s",
             (payload.is_open, test_row["id"]),
         )
 
@@ -599,10 +639,134 @@ def update_settings(
     return ResultsOverviewSettings(is_open=payload.is_open)
 
 
+@router.post(
+    "/{test_id}/classes",
+    response_model=ClassLinkOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Добавить класс к опубликованной работе",
+)
+def add_class(
+    payload: ClassLinkCreate,
+    test_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
+) -> ClassLinkOut:
+    """Новый класс получает свою ссылку; остальные ссылки и сданные работы не меняются."""
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    try:
+        with pool.connection() as conn, conn.transaction():
+            test_row = load_test_for_user(conn, test_id, user)
+            row = add_class_link(conn, test_row["id"], payload.class_name)
+            conn.execute(
+                """
+                UPDATE tests SET classes = array_append(classes, %s)
+                WHERE id = %s AND NOT (%s = ANY(classes))
+                """,
+                (payload.class_name, test_row["id"], payload.class_name),
+            )
+    except pg_errors.UniqueViolation:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Класс «{payload.class_name}» уже есть в этой работе.",
+        ) from None
+
+    logger.info("К работе %s добавлен класс %s", test_row["share_token"], payload.class_name)
+    return ClassLinkOut(**row)
+
+
+@router.patch(
+    "/{test_id}/classes/{class_id}",
+    response_model=ClassLinkOut,
+    summary="Открыть или закрыть приём работ по одному классу",
+)
+def update_class(
+    payload: ClassLinkUpdate,
+    test_id: int = Path(ge=1),
+    class_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
+) -> ClassLinkOut:
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_for_user(conn, test_id, user)
+        # test_id в условии обязателен: иначе, зная номер, можно было бы
+        # закрыть приём в чужой работе.
+        updated = conn.execute(
+            "UPDATE test_classes SET is_open = %s WHERE id = %s AND test_id = %s RETURNING id",
+            (payload.is_open, class_id, test_row["id"]),
+        ).fetchone()
+        if updated is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Такого класса в этой работе нет. Обновите страницу.",
+            )
+        row = next(link for link in load_class_links(conn, test_row["id"]) if link["id"] == class_id)
+
+    logger.info(
+        "Приём работ по тесту %s, класс %s: %s",
+        test_row["share_token"],
+        row["class_name"],
+        "открыт" if payload.is_open else "закрыт",
+    )
+    return ClassLinkOut(**row)
+
+
+@router.post(
+    "/{test_id}/attempts/{attempt_id}/annul",
+    summary="Разрешить пересдачу: аннулировать попытку",
+)
+def annul_attempt(
+    test_id: int = Path(ge=1),
+    attempt_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
+) -> dict:
+    """
+    Попытка остаётся в базе с отметкой «аннулирована»: её видно в списке работ,
+    но в умения, итоги, статистику и Excel она не идёт. Ученик (и его устройство)
+    снова может начать работу — по той же ссылке.
+    """
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_for_user(conn, test_id, user)
+        row = conn.execute(
+            """
+            UPDATE attempts SET annulled_at = coalesce(annulled_at, now())
+            WHERE id = %s AND test_id = %s
+            RETURNING id, student_name
+            """,
+            (attempt_id, test_row["id"]),
+        ).fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ответ этого ученика не найден — возможно, его уже удалили. Обновите страницу.",
+            )
+
+    logger.info(
+        "Разрешена пересдача: попытка %s (%s) в тесте %s аннулирована, учитель %s",
+        attempt_id,
+        row["student_name"],
+        test_row["share_token"],
+        user["email"],
+    )
+    return {"attempt_id": attempt_id, "annulled": True}
+
+
 @router.delete(
     "/{test_id}/attempts/{attempt_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Удалить работу ученика (разрешить пересдачу)",
+    summary="Удалить работу ученика совсем",
 )
 def delete_attempt(
     test_id: int = Path(ge=1),

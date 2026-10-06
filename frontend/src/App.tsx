@@ -3,8 +3,9 @@
  *
  * Страницы делятся на три группы:
  *   * публичные — вход, регистрация и страница ученика /t/:code;
- *   * для вошедших — кабинет, создание проверочной работы, результаты;
- *   * для администратора — учителя, статистика, расход ИИ, настройки.
+ *   * для вошедших — кабинет, создание проверочной работы, результаты, статистика
+ *     (учителю — по его работам, администратору — по школе);
+ *   * для администратора — учителя, расход ИИ, настройки.
  */
 
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router'
@@ -92,11 +93,12 @@ function TopBar() {
             <Link className="topbar__link" to="/create">
               Создать
             </Link>
+            {/* Учителю — статистика по его работам, администратору — по школе. */}
+            <Link className="topbar__link" to="/stats">
+              Статистика
+            </Link>
             {user.role === 'admin' && (
               <>
-                <Link className="topbar__link" to="/admin/stats">
-                  Статистика
-                </Link>
                 <Link className="topbar__link" to="/admin/teachers">
                   Учителя
                 </Link>
@@ -175,20 +177,23 @@ export default function App() {
           }
         />
 
+        <Route
+          path="/stats"
+          element={
+            <Protected>
+              <AdminStatsPage />
+            </Protected>
+          }
+        />
+        {/* Старый адрес статистики — закладки администраторов продолжают работать. */}
+        <Route path="/admin/stats" element={<Navigate to="/stats" replace />} />
+
         {/* Только администратор */}
         <Route
           path="/admin/teachers"
           element={
             <Protected adminOnly>
               <AdminTeachersPage />
-            </Protected>
-          }
-        />
-        <Route
-          path="/admin/stats"
-          element={
-            <Protected adminOnly>
-              <AdminStatsPage />
             </Protected>
           }
         />

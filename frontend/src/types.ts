@@ -106,9 +106,21 @@ export type TestCreatePayload = {
 }
 
 /** Ответ POST /api/tests */
+/** Ссылка работы для одного класса: /t/<code>. */
+export type ClassLink = {
+  id: number
+  class_name: string
+  code: string
+  is_open: boolean
+  /** Сколько работ сдано в этом классе (аннулированные не в счёт). */
+  attempts_count: number
+}
+
 export type CreatedTest = {
   id: number
   code: string
+  /** У каждой новой работы — своя ссылка на каждый класс. */
+  class_links: ClassLink[]
   title: string
   variants_count: number
   skills_count: number
@@ -123,6 +135,8 @@ export type PublicTestInfo = {
   title: string
   teacher_name: string
   classes: string[]
+  /** Класс задан ссылкой (ссылка класса) — ученик вводит только ФИО. */
+  class_name: string | null
   is_open: boolean
   tasks_count: number
 }
@@ -191,6 +205,11 @@ export type StoredAttempt = {
   title: string
   result: AttemptResult
   tasks: { id: number; text: string; position: number }[]
+  /**
+   * Секрет попытки: по нему страница спрашивает сервер, действует ли ещё
+   * результат (учитель мог разрешить пересдачу). У старых записей его нет.
+   */
+  attemptToken?: string
 }
 
 /** Начатая, но не сданная работа — чтобы продолжить после перезагрузки. */
@@ -223,6 +242,8 @@ export type AttemptRow = {
   max_score: number
   percent: number
   finished_at: string | null
+  /** Учитель разрешил пересдачу: попытка осталась для истории, в итоги не идёт. */
+  annulled: boolean
   /** {id умения: процент выполнения} — основа матрицы «ученик × умение». */
   skill_percents: Record<number, number>
 }
@@ -247,6 +268,9 @@ export type ResultsOverview = {
   classes: string[]
   variants_count: number
   is_open: boolean
+  /** true — ссылки только по классам; false — старая работа с общей ссылкой (code). */
+  links_by_class: boolean
+  class_links: ClassLink[]
   skills: SkillInfo[]
   attempts_count: number
   attempts: AttemptRow[]
@@ -307,6 +331,7 @@ export type MyTest = {
   is_open: boolean
   created_at: string
   attempts_count: number
+  links_by_class: boolean
   teacher_name: string
   teacher_id: number
 }
@@ -406,7 +431,18 @@ export type SchoolSettings = {
   allow_self_registration: boolean
 }
 
+/** Строка журнала выдачи прав администратора. */
+export type AdminLogEntry = {
+  id: number
+  created_at: string
+  admin_name: string
+  action: 'grant_admin' | 'revoke_admin'
+  target_name: string
+}
+
 export type SchoolStats = {
+  /** own — учитель, только его работы; school — администратор, вся школа. */
+  scope: 'own' | 'school'
   totals: {
     teachers: number
     tests: number
@@ -435,7 +471,12 @@ export type SchoolStats = {
     is_weak: boolean
   }[]
   by_day: { day: string; attempts_count: number }[]
-  filters: { subjects: string[]; classes: string[]; weak_below: number }
+  filters: {
+    subjects: string[]
+    classes: string[]
+    tests: { id: number; title: string }[]
+    weak_below: number
+  }
 }
 
 /* ===================== Генерация через ИИ ===================== */

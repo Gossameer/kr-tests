@@ -159,3 +159,25 @@ async def validation_error_handler(
             "errors": messages,
         },
     )
+
+
+async def migration_missing_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    В базе нет таблицы или столбца, которых ждёт код: миграцию не накатили.
+
+    Без этого обработчика учитель увидел бы «Internal Server Error», а в логе —
+    длинную трассировку. Здесь — одна строка в логе с подсказкой и понятный ответ.
+    """
+    import logging
+
+    logging.getLogger(__name__).error(
+        "База старее кода: %s. Накатите миграции из backend/migrations (последняя — 010).",
+        str(exc).splitlines()[0],
+    )
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "detail": "Сервис обновляется: на сервере ещё не обновлена база данных. "
+            "Сообщите администратору (нужно накатить миграцию)."
+        },
+    )

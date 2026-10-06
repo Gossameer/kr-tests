@@ -12,11 +12,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from psycopg import errors as pg_errors
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import ai_generation, db, mailer
 from app.config import get_settings
-from app.errors import validation_error_handler
+from app.errors import migration_missing_handler, validation_error_handler
 from app.routers import accounts, admin, ai, auth, health, public, results, tests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -116,6 +117,9 @@ app.add_middleware(
 # Ошибки валидации отдаём понятным текстом на русском вместо стандартного
 # англоязычного списка Pydantic (см. app/errors.py).
 app.add_exception_handler(RequestValidationError, validation_error_handler)
+# Код новее базы (миграцию забыли накатить) — честный ответ вместо «ошибки 500».
+app.add_exception_handler(pg_errors.UndefinedColumn, migration_missing_handler)
+app.add_exception_handler(pg_errors.UndefinedTable, migration_missing_handler)
 
 # Роутеры — способ разложить эндпоинты по файлам вместо одного длинного main.py.
 app.include_router(health.router)
@@ -123,6 +127,7 @@ app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(accounts.admin_router)
 app.include_router(admin.router)
+app.include_router(admin.stats_router)
 app.include_router(ai.admin_router)
 app.include_router(ai.router)
 app.include_router(tests.router)

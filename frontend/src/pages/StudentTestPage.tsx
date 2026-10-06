@@ -1,8 +1,11 @@
 /**
  * Страница ученика: /t/:code
  *
+ * Код в ссылке — либо код класса (класс уже задан, ученик вводит только ФИО),
+ * либо общий код старой работы (тогда класс выбирается из списка).
+ *
  * Три экрана:
- *   1. «start»   — название, ФИО и выбор класса, кнопка «Начать»;
+ *   1. «start»   — название, ФИО (и выбор класса у старых работ), кнопка «Начать»;
  *   2. «solving» — задания выданного варианта, прогресс «отвечено X из Y»;
  *   3. «done»    — «Верно X из Y» и ✓/✗ по заданиям.
  *
@@ -15,12 +18,15 @@ import { useParams } from 'react-router'
 import {
   NETWORK_ERROR,
   SERVER_ERROR,
+  checkAttempt,
   fetchPublicTest,
   startAttempt,
   submitAttempt,
 } from '../api'
 import {
+  clearAttempt,
   clearProgress,
+  getDeviceId,
   loadAttempt,
   loadProgress,
   saveAttempt,
@@ -103,6 +109,25 @@ export default function StudentTestPage() {
       )
   }, [code])
 
+  // Браузер помнит сданную работу. Если учитель разрешил пересдачу, эта память
+  // устарела: спрашиваем сервер и, если попытки больше нет, показываем «Начать».
+  // Нет связи — оставляем результат на экране: хуже от этого не станет.
+  useEffect(() => {
+    const saved = loadAttempt(code)
+    if (saved === null || !saved.attemptToken) {
+      return
+    }
+    checkAttempt(code, saved.result.attempt_id, saved.attemptToken)
+      .then((state) => {
+        if (state === 'gone') {
+          clearAttempt(code)
+          setStored(null)
+          setPhase('start')
+        }
+      })
+      .catch(() => undefined)
+  }, [code])
+
   /**
    * Порядок заданий для этого ученика.
    * useMemo — чтобы порядок не менялся на каждую перерисовку, а seed из
@@ -129,7 +154,10 @@ export default function StudentTestPage() {
       : studentName.trim().split(/\s+/).length < 2
         ? 'Нужны и фамилия, и имя — через пробел, например: Иванов Иван.'
         : ''
-  const classError = studentClass.trim() === '' ? 'Выберите свой класс из списка.' : ''
+  // Класс задан ссылкой — выбирать нечего.
+  const fixedClass = loading.kind === 'ready' ? loading.info.class_name : null
+  const classError =
+    fixedClass === null && studentClass.trim() === '' ? 'Выберите свой класс из списка.' : ''
   const shownNameError = touchedName ? nameError : ''
   const shownClassError = touchedClass ? classError : ''
 
@@ -149,7 +177,12 @@ export default function StudentTestPage() {
     setStarting(true)
 
     try {
-      const started = await startAttempt(code, studentName.trim(), studentClass.trim())
+      const started = await startAttempt(
+        code,
+        studentName.trim(),
+        fixedClass ?? studentClass.trim(),
+        getDeviceId(),
+      )
       setAttempt(started)
       // Запоминаем попытку: после перезагрузки вернёмся в тот же вариант.
       saveProgress(code, {
@@ -240,6 +273,7 @@ export default function StudentTestPage() {
         code,
         title: attempt.title,
         result,
+        attemptToken: attempt.attempt_token,
         // Тексты заданий храним рядом с результатом, чтобы экран открывался
         // и без связи с сервером.
         tasks: tasks.map((task) => ({
@@ -405,6 +439,15 @@ export default function StudentTestPage() {
             </p>
           )}
 
+          {fixedClass !== null && (
+            <p className="fixedclass">
+              Класс: <b>{fixedClass}</b>
+              <span className="hint"> — задан ссылкой, которую дал учитель</span>
+            </p>
+          )}
+
+          {fixedClass === null && (
+            <>
           <label className="label label--spaced" htmlFor="student-class">
             Класс
           </label>
@@ -436,6 +479,8 @@ export default function StudentTestPage() {
               Нажмите на поле и выберите свой класс.
             </p>
           )}
+            </>
+          )}
 
           {formError !== '' && (
             <div className="alert alert--error">
@@ -455,8 +500,8 @@ export default function StudentTestPage() {
           </div>
 
           <p className="hint">
-            Вариант выдаётся автоматически. Если вы уже начинали — введите те же фамилию,
-            имя и класс, и откроется ваш вариант.
+            Вариант выдаётся автоматически. Если вы уже начинали — введите те же фамилию
+            и имя{fixedClass === null && ', выберите тот же класс'}, и откроется ваш вариант.
           </p>
         </section>
       </main>

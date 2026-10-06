@@ -516,7 +516,6 @@ export default function CreateTestPage() {
   // Сколько клеток сервер не составил: не справился ИИ или прервал перезапуск.
   const missingCells = job !== null ? job.failed + job.interrupted_cells : 0
 
-  const studentUrl = created ? `${window.location.origin}/t/${created.code}` : ''
   const resultsUrl = created ? `/tests/${created.id}/results` : ''
 
   // ------------------------------------------------------------------
@@ -528,16 +527,23 @@ export default function CreateTestPage() {
         <h1>Проверочная работа опубликована</h1>
         <p className="lead">
           «{created.title}»: умений {created.skills_count}, вариантов{' '}
-          {created.variants_count}, заданий всего {created.tasks_count}. Код:{' '}
-          <code>{created.code}</code>
+          {created.variants_count}, заданий всего {created.tasks_count}.
         </p>
 
         <section className="card card--success">
-          <CopyLink
-            label="Для учеников"
-            url={studentUrl}
-            hint="Эту ссылку отправьте классу — вариант выдаётся каждому автоматически."
-          />
+          <h2>Ссылки для учеников — своя у каждого класса</h2>
+          {created.class_links.map((link) => (
+            <CopyLink
+              key={link.id}
+              label={`Класс ${link.class_name}`}
+              url={`${window.location.origin}/t/${link.code}`}
+            />
+          ))}
+          <p className="hint">
+            Отправьте каждому классу его ссылку: класс уже задан, ученик вводит только
+            фамилию и имя, вариант выдаётся автоматически. Ссылки, приём работ по каждому
+            классу и число сдавших — на странице результатов.
+          </p>
 
           <p className="hint">
             Результаты открываются из вашего кабинета — отдельная ссылка больше не нужна,
@@ -671,7 +677,7 @@ export default function CreateTestPage() {
               </p>
             ) : (
               <p className="hint" id="test-classes-hint">
-                Через запятую, например: 5А, 5Б. Ученик выберет свой класс из этого списка.
+                Через запятую, например: 5А, 5Б. У каждого класса будет своя ссылка.
                 {classes.length > 0 && <> Сейчас: {classes.join(', ')}.</>}
               </p>
             )}

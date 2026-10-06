@@ -52,6 +52,41 @@ export function saveAttempt(code: string, attempt: StoredAttempt): void {
   }
 }
 
+export function clearAttempt(code: string): void {
+  try {
+    window.localStorage.removeItem(attemptKey(code))
+  } catch {
+    // игнорируем
+  }
+}
+
+/* ===================== Метка устройства ===================== */
+
+const DEVICE_KEY = 'kr-tests:device'
+
+/**
+ * Случайная метка этого браузера. Сервер по ней следит за правилом
+ * «с одного устройства — одна сданная работа по ссылке класса».
+ *
+ * Если хранилище недоступно (инкогнито с запретом данных), метки нет — тогда
+ * действует только правило «один ученик — одна попытка».
+ */
+export function getDeviceId(): string {
+  try {
+    const saved = window.localStorage.getItem(DEVICE_KEY)
+    if (saved && saved.length >= 16) {
+      return saved
+    }
+    const bytes = new Uint8Array(16)
+    window.crypto.getRandomValues(bytes)
+    const fresh = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    window.localStorage.setItem(DEVICE_KEY, fresh)
+    return fresh
+  } catch {
+    return ''
+  }
+}
+
 /* ===================== Начатая работа ===================== */
 
 export function loadProgress(code: string): StoredProgress | null {

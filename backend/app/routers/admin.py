@@ -6,9 +6,13 @@
     POST  /api/admin/teachers/{id}/reset-password  — выдать временный пароль
     GET   /api/admin/settings                      — школьный код
     PUT   /api/admin/settings                      — сменить школьный код
+    PUT   /api/admin/teachers/{id}/role            — выдать / снять права администратора
+    GET   /api/admin/log                           — журнал выдачи прав
     GET   /api/admin/stats                         — статистика по школе
+    GET   /api/stats                               — статистика: учителю — по его
+                                                     работам, администратору — вся
 
-Все эндпоинты требуют роль admin (зависимость require_admin).
+Эндпоинты /api/admin/* требуют роль admin (зависимость require_admin).
 """
 
 import logging
@@ -18,9 +22,10 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from psycopg import errors as pg_errors
 
 from app import db
-from app.auth import db_unavailable, require_admin
+from app.auth import db_unavailable, forbidden, require_admin, require_user
 from app.schemas import (
     PasswordResetOut,
+    RoleUpdate,
     SettingsOut,
     SettingsUpdate,
     TeacherRow,
@@ -31,6 +36,8 @@ from app.security import hash_password, temporary_password
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+# Статистика доступна и учителю (только по своим работам) — адрес без /admin.
+stats_router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 # Ниже этого процента умение считаем несформированным (красная зона).
 WEAK_SKILL_PERCENT = 50
@@ -50,6 +57,7 @@ TEACHERS_SQL = """
     FROM users u
     LEFT JOIN tests t    ON t.teacher_id = u.id
     LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
+                        AND a.annulled_at IS NULL
     -- Последнее письмо-приглашение этому человеку.
     LEFT JOIN LATERAL (
         SELECT m.created_at, m.status, m.error FROM mail_log m
@@ -221,6 +229,116 @@ def reset_password(
     )
 
 
+@router.put(
+    "/teachers/{user_id}/role",
+    response_model=TeacherRow,
+    summary="Сделать администратором или снять права",
+)
+def update_role(
+    payload: RoleUpdate,
+    user_id: int = Path(ge=1),
+    admin: dict = Depends(require_admin),
+) -> TeacherRow:
+    """
+    Права действуют сразу: роль читается из базы при каждом запросе.
+
+    Два запрета, чтобы школа не осталась без администратора:
+      * нельзя снять права с самого себя;
+      * нельзя снять права с последнего действующего администратора.
+    Каждое изменение пишется в журнал admin_log.
+    """
+    if user_id == admin["id"] and payload.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя снять права администратора с самого себя — попросите другого администратора.",
+        )
+
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        with conn.transaction():
+            # Блокируем всех администраторов разом: два одновременных «Снять права»
+            # не должны оба увидеть «администраторов ещё двое».
+            admins = conn.execute(
+                "SELECT id, is_active FROM users WHERE role = 'admin' FOR UPDATE"
+            ).fetchall()
+            target = conn.execute(
+                "SELECT id, full_name, role, is_active FROM users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            ).fetchone()
+
+            if target is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Такого пользователя нет.",
+                )
+
+            if target["role"] != payload.role:
+                if payload.role == "teacher":
+                    others = [
+                        row for row in admins if row["id"] != user_id and row["is_active"]
+                    ]
+                    if not others:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Это последний администратор — снять с него права нельзя.",
+                        )
+                elif not target["is_active"]:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Учётная запись отключена — сначала включите её.",
+                    )
+
+                conn.execute("UPDATE users SET role = %s WHERE id = %s", (payload.role, user_id))
+                conn.execute(
+                    """
+                    INSERT INTO admin_log (admin_id, admin_name, action, target_id, target_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        admin["id"],
+                        admin["full_name"],
+                        "grant_admin" if payload.role == "admin" else "revoke_admin",
+                        user_id,
+                        target["full_name"],
+                    ),
+                )
+                logger.info(
+                    "Администратор %s %s: %s (id %s)",
+                    admin["email"],
+                    "выдал права администратора"
+                    if payload.role == "admin"
+                    else "снял права администратора",
+                    target["full_name"],
+                    user_id,
+                )
+
+        row = conn.execute(
+            TEACHERS_SQL.format(where="WHERE u.id = %s"), (user_id,)
+        ).fetchone()
+
+    return teacher_row(row)
+
+
+@router.get("/log", summary="Журнал выдачи прав администратора")
+def admin_log(admin: dict = Depends(require_admin)) -> list[dict]:
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        return conn.execute(
+            """
+            SELECT id, created_at, admin_name, action, target_name
+            FROM admin_log ORDER BY id DESC LIMIT 50
+            """
+        ).fetchall()
+
+
 def read_settings(conn) -> SettingsOut:
     values = {
         row["key"]: row["value"]
@@ -292,24 +410,53 @@ def stats(
     days: int = Query(default=0, ge=0, le=3650, description="Период в днях, 0 — за всё время"),
     subject: str = Query(default="", description="Фильтр по предмету"),
     student_class: str = Query(default="", description="Фильтр по классу"),
+    test_id: int = Query(default=0, ge=0, description="Только эта работа, 0 — все"),
 ) -> dict:
+    """Статистика по всей школе — то же, что /api/stats для администратора."""
+    return build_stats(admin, days, subject, student_class, test_id)
+
+
+@stats_router.get("", summary="Статистика: учителю — по своим работам, администратору — вся")
+def my_stats(
+    user: dict = Depends(require_user),
+    days: int = Query(default=0, ge=0, le=3650, description="Период в днях, 0 — за всё время"),
+    subject: str = Query(default="", description="Фильтр по предмету"),
+    student_class: str = Query(default="", description="Фильтр по классу"),
+    test_id: int = Query(default=0, ge=0, description="Только эта работа, 0 — все"),
+) -> dict:
+    return build_stats(user, days, subject, student_class, test_id)
+
+
+def build_stats(user: dict, days: int, subject: str, student_class: str, test_id: int) -> dict:
     """
     Всё, что нужно разделу «Статистика», одним запросом.
 
+    Учитель видит только свои работы: условие «автор — я» добавляется на сервере
+    ко ВСЕМ выборкам, а чужая работа, запрошенная по номеру, даёт 403.
+    Администратор видит всю школу.
+
     Фильтры применяются к сданным работам: период считается по времени сдачи,
-    предмет — по проверочной работе, класс — по ученику.
+    предмет — по проверочной работе, класс — по ученику. Аннулированные попытки
+    (после «Разрешить пересдачу») в статистику не идут.
     """
     try:
         pool = db.get_pool()
     except Exception as exc:  # noqa: BLE001
         raise db_unavailable() from exc
 
+    own_only = user["role"] != "admin"
     since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
 
     # Условие для выборок по работам. Собираем один раз, чтобы фильтры
     # применялись одинаково во всех разрезах.
-    where = ["a.finished_at IS NOT NULL"]
+    where = ["a.finished_at IS NOT NULL", "a.annulled_at IS NULL"]
     params: list = []
+    if own_only:
+        where.append("t.teacher_id = %s")
+        params.append(user["id"])
+    if test_id:
+        where.append("t.id = %s")
+        params.append(test_id)
     if since is not None:
         where.append("a.finished_at >= %s")
         params.append(since)
@@ -321,23 +468,47 @@ def stats(
         params.append(student_class)
     condition = " AND ".join(where)
 
+    # Чьи работы считаем в сводке и в списках фильтров.
+    owner = "t.teacher_id = %(owner)s" if own_only else "TRUE"
+    owner_params = {"owner": user["id"]}
+
     with pool.connection() as conn:
+        if test_id:
+            # Чужую работу по номеру не отдаём — даже пустой статистикой.
+            test_row = conn.execute(
+                "SELECT teacher_id FROM tests WHERE id = %s", (test_id,)
+            ).fetchone()
+            if test_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Проверочная работа не найдена.",
+                )
+            if own_only and test_row["teacher_id"] != user["id"]:
+                raise forbidden(
+                    "Это проверочная работа другого учителя — её статистика доступна только автору."
+                )
+
         # --- Сводка ---
         totals = conn.execute(
-            """
+            f"""
             SELECT
                 (SELECT count(*) FROM users WHERE role = 'teacher') AS teachers,
-                (SELECT count(*) FROM tests)                        AS tests,
-                (SELECT count(*) FROM attempts WHERE finished_at IS NOT NULL) AS attempts_total,
-                (SELECT count(*) FROM attempts
-                  WHERE finished_at >= now() - interval '7 days')   AS attempts_week,
-                (SELECT count(*) FROM attempts
-                  WHERE finished_at >= now() - interval '30 days')  AS attempts_month
-            """
+                (SELECT count(*) FROM tests t WHERE {owner})        AS tests,
+                (SELECT count(*) FROM attempts a JOIN tests t ON t.id = a.test_id
+                  WHERE {owner} AND a.annulled_at IS NULL
+                    AND a.finished_at IS NOT NULL)                  AS attempts_total,
+                (SELECT count(*) FROM attempts a JOIN tests t ON t.id = a.test_id
+                  WHERE {owner} AND a.annulled_at IS NULL
+                    AND a.finished_at >= now() - interval '7 days') AS attempts_week,
+                (SELECT count(*) FROM attempts a JOIN tests t ON t.id = a.test_id
+                  WHERE {owner} AND a.annulled_at IS NULL
+                    AND a.finished_at >= now() - interval '30 days') AS attempts_month
+            """,
+            owner_params,
         ).fetchone()
 
-        # --- По учителям ---
-        by_teacher = conn.execute(
+        # --- По учителям (только администратору) ---
+        by_teacher = [] if own_only else conn.execute(
             f"""
             SELECT u.id, u.full_name,
                    count(DISTINCT t.id) AS tests_count,
@@ -423,17 +594,29 @@ def stats(
             params,
         ).fetchall()
 
-        # --- Списки для фильтров ---
+        # --- Списки для фильтров (учителю — только из его работ) ---
         subjects = conn.execute(
-            "SELECT DISTINCT subject FROM tests WHERE subject <> '' ORDER BY subject"
+            f"SELECT DISTINCT t.subject FROM tests t WHERE t.subject <> '' AND {owner} ORDER BY 1",
+            owner_params,
         ).fetchall()
         classes = conn.execute(
-            "SELECT DISTINCT student_class FROM attempts ORDER BY student_class"
+            f"""
+            SELECT DISTINCT a.student_class FROM attempts a
+            JOIN tests t ON t.id = a.test_id
+            WHERE {owner} AND a.annulled_at IS NULL ORDER BY 1
+            """,
+            owner_params,
+        ).fetchall()
+        tests = conn.execute(
+            f"SELECT t.id, t.title FROM tests t WHERE {owner} ORDER BY t.created_at DESC, t.id DESC",
+            owner_params,
         ).fetchall()
 
     return {
+        # own — учитель видит только свои работы; school — администратор, вся школа.
+        "scope": "own" if own_only else "school",
         "totals": {
-            "teachers": totals["teachers"],
+            "teachers": 0 if own_only else totals["teachers"],
             "tests": totals["tests"],
             "attempts_total": totals["attempts_total"],
             "attempts_week": totals["attempts_week"],
@@ -489,6 +672,7 @@ def stats(
         "filters": {
             "subjects": [row["subject"] for row in subjects],
             "classes": [row["student_class"] for row in classes],
+            "tests": [{"id": row["id"], "title": row["title"]} for row in tests],
             "weak_below": WEAK_SKILL_PERCENT,
         },
     }

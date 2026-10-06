@@ -34,6 +34,38 @@ def generate_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
 
+def unique_code(conn) -> str:
+    """
+    Код, которого нет ни среди общих кодов работ, ни среди кодов классов:
+    и те и другие открываются по одному адресу /t/<код>.
+    """
+    while True:
+        code = generate_code()
+        taken = conn.execute(
+            """
+            SELECT 1 FROM tests WHERE share_token = %(code)s
+            UNION ALL
+            SELECT 1 FROM test_classes WHERE code = %(code)s
+            LIMIT 1
+            """,
+            {"code": code},
+        ).fetchone()
+        if taken is None:
+            return code
+
+
+def add_class_link(conn, test_id: int, class_name: str, is_open: bool = True) -> dict:
+    """Создаёт ссылку класса и возвращает её строку."""
+    return conn.execute(
+        """
+        INSERT INTO test_classes (test_id, class_name, code, is_open)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id, class_name, code, is_open, 0 AS attempts_count
+        """,
+        (test_id, class_name, unique_code(conn), is_open),
+    ).fetchone()
+
+
 def db_unavailable() -> HTTPException:
     """Одинаковый понятный ответ, когда база не отвечает."""
     return HTTPException(
@@ -65,18 +97,18 @@ def create_test(payload: TestCreate, user: dict = Depends(require_user)) -> Test
     tasks_count = sum(len(variant.tasks) for variant in payload.variants)
 
     for attempt in range(CODE_ATTEMPTS):
-        code = generate_code()
-
         try:
             with pool.connection() as conn, conn.transaction():
-                # 1. Сама проверочная работа.
+                code = unique_code(conn)
+                # 1. Сама проверочная работа. Ссылки у неё — по классам (см. ниже),
+                #    общий код остаётся только как имя работы в логах и файлах.
                 test_row = conn.execute(
                     """
                     INSERT INTO tests (
                         title, subject, teacher_id, teacher_name, share_token,
-                        classes, shuffle, variants_count, is_published
+                        classes, shuffle, variants_count, is_published, links_by_class
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, TRUE)
                     RETURNING id
                     """,
                     (
@@ -92,6 +124,11 @@ def create_test(payload: TestCreate, user: dict = Depends(require_user)) -> Test
                     ),
                 ).fetchone()
                 test_id = test_row["id"]
+
+                # 1а. Своя ссылка на каждый класс.
+                class_links = [
+                    add_class_link(conn, test_id, class_name) for class_name in payload.classes
+                ]
 
                 # 2. Умения. Запоминаем их id по порядковому номеру: задания
                 #    ссылаются на умение номером (skill_index), а не id.
@@ -172,6 +209,7 @@ def create_test(payload: TestCreate, user: dict = Depends(require_user)) -> Test
             return TestCreated(
                 id=test_id,
                 code=code,
+                class_links=class_links,
                 title=payload.title,
                 variants_count=payload.variants_count,
                 skills_count=len(payload.skills),
@@ -224,11 +262,18 @@ def my_tests(user: dict = Depends(require_user)) -> list[MyTestRow]:
         rows = conn.execute(
             """
             SELECT t.id, t.share_token AS code, t.title, t.subject, t.classes,
-                   t.variants_count, t.is_open, t.created_at,
+                   t.variants_count, t.created_at, t.links_by_class,
                    t.teacher_id, t.teacher_name,
+                   -- У работы со ссылками по классам «приём открыт», пока открыт
+                   -- хотя бы один класс.
+                   CASE WHEN t.links_by_class
+                        THEN EXISTS (SELECT 1 FROM test_classes c
+                                     WHERE c.test_id = t.id AND c.is_open)
+                        ELSE t.is_open END AS is_open,
                    count(a.id) AS attempts_count
             FROM tests t
             LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
+                                AND a.annulled_at IS NULL
             WHERE %s OR t.teacher_id = %s
             GROUP BY t.id
             ORDER BY t.created_at DESC, t.id DESC

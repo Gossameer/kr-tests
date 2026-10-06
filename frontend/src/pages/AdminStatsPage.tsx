@@ -1,13 +1,17 @@
 /**
- * Админка → Статистика: /admin/stats
+ * Статистика: /stats
+ *
+ * Учитель видит её только по своим работам — по классам и умениям; администратор —
+ * по всей школе, с разрезом по учителям. Что кому отдать, решает сервер.
  *
  * Главный вопрос этой страницы — не «сколько работ сдали», а «каких умений
- * не хватает школе»: блок слабых умений показывает, у какого учителя,
- * по какому предмету и в каком классе провал.
+ * не хватает»: блок слабых умений показывает, по какому предмету и в каком
+ * классе провал (а администратору — ещё и у какого учителя).
  */
 
 import { useCallback, useEffect, useState } from 'react'
 import { fetchSchoolStats } from '../api'
+import { useAuth } from '../lib/authContext'
 import type { SchoolStats } from '../types'
 import { usePageTitle } from '../lib/usePageTitle'
 
@@ -42,24 +46,32 @@ function formatDay(value: string): string {
 }
 
 export default function AdminStatsPage() {
-  usePageTitle('Статистика школы')
+  const { user } = useAuth()
+  // Пока ответ не пришёл, судим по роли; потом — по тому, что отдал сервер.
+  const [scope, setScope] = useState<'own' | 'school'>(user?.role === 'admin' ? 'school' : 'own')
+  const school = scope === 'school'
+  usePageTitle(school ? 'Статистика школы' : 'Моя статистика')
   const [days, setDays] = useState(30)
   const [subject, setSubject] = useState('')
   const [studentClass, setStudentClass] = useState('')
+  const [testId, setTestId] = useState(0)
   const [loading, setLoading] = useState<Loading>({ kind: 'loading' })
 
   // «Загружаем» ставят обработчики фильтров: внутри эффекта менять состояние
   // синхронно не нужно — при первом показе оно уже 'loading'.
   const load = useCallback(() => {
-    fetchSchoolStats({ days, subject, studentClass })
-      .then((stats) => setLoading({ kind: 'ready', stats }))
+    fetchSchoolStats({ days, subject, studentClass, testId })
+      .then((stats) => {
+        setScope(stats.scope)
+        setLoading({ kind: 'ready', stats })
+      })
       .catch((error: unknown) =>
         setLoading({
           kind: 'error',
           message: error instanceof Error ? error.message : 'Не удалось загрузить статистику',
         }),
       )
-  }, [days, subject, studentClass])
+  }, [days, subject, studentClass, testId])
 
   useEffect(load, [load])
 
@@ -80,8 +92,13 @@ export default function AdminStatsPage() {
 
   return (
     <main className="page page--wide">
-      <h1>Статистика школы</h1>
-      <p className="lead">Считается по сданным работам. Фильтры действуют на все разделы.</p>
+      <h1>{school ? 'Статистика школы' : 'Моя статистика'}</h1>
+      <p className="lead">
+        {school
+          ? 'Все работы школы. Считается по сданным работам; фильтры действуют на все разделы.'
+          : 'Только ваши проверочные работы: как справились классы и какие умения не сформированы. ' +
+            'Считается по сданным работам; фильтры действуют на все разделы.'}
+      </p>
 
       {/* ------------------------- Фильтры ------------------------- */}
       <section className="card">
@@ -147,6 +164,28 @@ export default function AdminStatsPage() {
               ))}
             </select>
           </div>
+
+          <div className="field">
+            <label className="label" htmlFor="filter-test">
+              Работа
+            </label>
+            <select
+              id="filter-test"
+              className="input select"
+              value={testId}
+              onChange={(event) => {
+                setLoading({ kind: 'loading' })
+                setTestId(Number(event.target.value))
+              }}
+            >
+              <option value={0}>Все работы</option>
+              {stats?.filters.tests.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.title}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </section>
 
@@ -158,10 +197,12 @@ export default function AdminStatsPage() {
           <section className="card">
             <h2>Сводка</h2>
             <ul className="tiles">
-              <li className="tile">
-                <span className="tile__value">{stats.totals.teachers}</span>
-                <span className="tile__label">учителей</span>
-              </li>
+              {school && (
+                <li className="tile">
+                  <span className="tile__value">{stats.totals.teachers}</span>
+                  <span className="tile__label">учителей</span>
+                </li>
+              )}
               <li className="tile">
                 <span className="tile__value">{stats.totals.tests}</span>
                 <span className="tile__label">проверочных работ</span>
@@ -200,7 +241,7 @@ export default function AdminStatsPage() {
                       <th>Умение</th>
                       <th>Предмет</th>
                       <th>Класс</th>
-                      <th>Учитель</th>
+                      {school && <th>Учитель</th>}
                       <th>Работа</th>
                       <th>Ответов</th>
                     </tr>
@@ -214,7 +255,7 @@ export default function AdminStatsPage() {
                         <td>{skill.title}</td>
                         <td>{skill.subject || '—'}</td>
                         <td>{skill.student_class}</td>
-                        <td>{skill.teacher_name}</td>
+                        {school && <td>{skill.teacher_name}</td>}
                         <td>{skill.test_title}</td>
                         <td>{skill.answers_count}</td>
                       </tr>
@@ -226,6 +267,7 @@ export default function AdminStatsPage() {
           </section>
 
           {/* ------------------------- Разрезы ------------------------- */}
+          {school && (
           <section className="card">
             <h2>По учителям</h2>
             <div className="table-scroll">
@@ -255,6 +297,7 @@ export default function AdminStatsPage() {
               </table>
             </div>
           </section>
+          )}
 
           <section className="card">
             <h2>По предметам и классам</h2>

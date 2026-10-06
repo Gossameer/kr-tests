@@ -117,13 +117,23 @@ export default function HomePage() {
                     <Link className="btn btn--small btn--primary" to={`/tests/${test.id}/results`}>
                       Результаты
                     </Link>
-                    <button
-                      type="button"
-                      className="btn btn--small btn--ghost"
-                      onClick={() => handleCopy(test)}
-                    >
-                      {copiedCode === test.code ? 'Скопировано' : 'Ссылка ученикам'}
-                    </button>
+                    {test.links_by_class ? (
+                      // У каждого класса своя ссылка — они на странице работы.
+                      <Link
+                        className="btn btn--small btn--ghost"
+                        to={`/tests/${test.id}/results#class-links`}
+                      >
+                        Ссылки классам
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn--small btn--ghost"
+                        onClick={() => handleCopy(test)}
+                      >
+                        {copiedCode === test.code ? 'Скопировано' : 'Ссылка ученикам'}
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}
