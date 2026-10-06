@@ -43,6 +43,7 @@ from app.ai_client import AIError, RequestContext, chat
 from app.answers import check_input_answer
 from app.config import get_settings
 from app.errors import describe_error
+from app.formulas import formula_problem, plain_text
 from app.schemas import TestCreate
 
 logger = logging.getLogger(__name__)
@@ -139,9 +140,14 @@ def subject_line(request: dict) -> str:
 
 # Школьная запись: так пишут в учебниках, и ученик не спотыкается о «*» и «/».
 SCHOOL_NOTATION = (
-    "записывай математику по-школьному: умножение — знак «·» (например, 3 · 4), "
-    "деление — двоеточие «:» (например, 12 : 3), дроби — через косую черту (3/5); "
-    "не используй «*» и не пиши «/» для деления чисел."
+    "математические выражения в тексте задания, вариантах ответа и решении пиши формулами "
+    "LaTeX строго между знаками доллара: $...$ (другие обозначения формул не используй, "
+    "каждый открытый $ закрывай); запись школьная: умножение — \\cdot ($3 \\cdot 4$), "
+    "деление — двоеточие ($12 : 3$), дроби — \\frac ($\\frac{3}{5}$), смешанные числа — "
+    "$2\\frac{1}{3}$, десятичная запятая — {,} ($2{,}5$), степень — $x^{2}$, корень — "
+    "$\\sqrt{x}$; не используй «*» и «/». В JSON обратную черту удваивай: "
+    '"$\\\\frac{3}{5}$". В "answers" разметки НЕТ: ответ записан так, как его наберёт '
+    "ученик с клавиатуры — 3/5, 2 1/3, 2,5, -4, без $ и без команд LaTeX."
 )
 
 # Ответ в условии — задание ничего не проверяет («Поставьте ударение: звонИт»).
@@ -345,7 +351,8 @@ def check_messages(request: dict, task: dict) -> list[dict]:
         user = (
             f"{context}\n\nРеши задание.\n\nЗадание: {task['text']}\n\n"
             "В ответе напиши ТОЛЬКО окончательный ответ — число или несколько слов, "
-            "без решения и пояснений."
+            "без решения и пояснений. Ответ запиши без разметки, как с клавиатуры: "
+            "дробь — 3/5, смешанное число — 2 1/3, десятичная дробь — 2,5."
         )
         if case_only_answer(task):
             # Как записать ударение — не подсказка: какая гласная ударная, модель решает сама.
@@ -436,8 +443,35 @@ STAR_RE = re.compile(r"(?<=[\w)\]])\s*(?<!\*)\*(?!\*)\s*(?=[\w(\[])|\s\*\s")
 
 
 def school_signs(text: str) -> str:
-    """Заменяет «*» на школьный знак умножения «·» в тексте, который увидит человек."""
-    return STAR_RE.sub(" · ", text)
+    """
+    Заменяет «*» на школьный знак умножения в тексте, который увидит человек:
+    в обычном тексте — «·», внутри формулы $…$ — команду \\cdot.
+    """
+
+    def replace(match: re.Match) -> str:
+        inside_formula = text.count("$", 0, match.start()) % 2 == 1
+        return " \\cdot " if inside_formula else " · "
+
+    return STAR_RE.sub(replace, text)
+
+
+# Обратная черта в JSON, после которой идёт не то, что положено по стандарту:
+# «\c» из «\cdot», «\{», «\,». И команды LaTeX, которые начинаются как законная
+# запись JSON и молча превратились бы в мусор: «\frac» — в «перевод страницы + rac»,
+# «\times» — в «табуляцию + imes». Модели часто забывают удвоить черту.
+LATEX_IN_JSON_RE = re.compile(
+    r"(?<!\\)((?:\\\\)*)\\(?="
+    r"[^\"\\/bfnrtu]"
+    r"|(?:frac|beta|bar|begin|bullet|backslash|big|forall|neq?|nu|notin|nabla|rho|right|"
+    r"rightarrow|rbrace|rangle|times|tau|theta|text|textrm|textbf|textit|tfrac|to|tg|tan|"
+    r"th|triangle|textstyle)(?![a-zA-Z])"
+    r")"
+)
+
+
+def fix_latex_escapes(raw: str) -> str:
+    """Удваивает обратную черту перед командами LaTeX в тексте JSON."""
+    return LATEX_IN_JSON_RE.sub(lambda match: match.group(1) + "\\\\", raw)
 
 
 def read_task(source: dict, skill_index: int, fallback_format: str) -> dict:
@@ -461,8 +495,11 @@ def read_task(source: dict, skill_index: int, fallback_format: str) -> dict:
             else []
         ),
         "correct": correct if answer_format == "choice" else None,
+        # Ответ для ввода — без разметки: ученик наберёт «3/5», а не «$\frac{3}{5}$».
         "accepted_answers": (
-            _as_string_list(source.get("answers")) if answer_format == "input" else []
+            [plain_text(answer).strip() for answer in _as_string_list(source.get("answers"))]
+            if answer_format == "input"
+            else []
         ),
         "solution": school_signs(_as_string(source.get("solution"))),
     }
@@ -472,7 +509,7 @@ def load_json_object(raw: str) -> dict:
     if not raw.strip():
         raise VariantProblem("пустой ответ")
     try:
-        data = json.loads(extract_json_block(raw))
+        data = json.loads(fix_latex_escapes(extract_json_block(raw)))
     except ValueError:
         raise VariantProblem("ответ не является корректным JSON") from None
     if not isinstance(data, dict):
@@ -754,6 +791,12 @@ def task_warning(task: dict) -> str:
             "ввод не различает регистр — засчитается любое ударение; "
             "переключите умение на «выбор»"
         )
+    # Битая формула: ученик увидит сырую разметку вместо дроби.
+    for piece in (task["text"], *task["options"], task["solution"]):
+        problem = formula_problem(piece)
+        if problem:
+            warnings.append(f"ошибка в формуле: {problem}")
+            break
     return "; ".join(warnings)
 
 

@@ -31,8 +31,11 @@ import type { TaskPlace } from '../lib/aiJob'
 import { buildReplacePrompt } from '../lib/aiPrompt'
 import type { PromptFields } from '../lib/aiPrompt'
 import { cellId } from '../lib/checklist'
+import { SNIPPET_BUTTONS, hasUnclosedDollar, insertSnippet, shortenText } from '../lib/formula'
+import type { SnippetKind } from '../lib/formula'
 import { parseSingleTask, taskProblem } from '../lib/parseTestJson'
 import type { AiCellStatus, SkillDraft, TaskDraft, VariantDraft } from '../types'
+import MathText from './MathText'
 
 type Props = {
   skills: SkillDraft[]
@@ -173,6 +176,50 @@ export default function TaskTable({
 
   const selectedBusy = place !== null && regenerating === placeKey(place)
 
+  /**
+   * Вставка из панели формул — в то поле, где стоит курсор (текст, вариант
+   * ответа или решение). Кнопки панели не забирают фокус (см. onMouseDown),
+   * поэтому активный элемент страницы — это и есть нужное поле.
+   */
+  function handleInsert(kind: SnippetKind) {
+    if (!place || !selected) {
+      return
+    }
+    const active = document.activeElement
+    const field =
+      active instanceof HTMLElement && active.dataset.formula !== undefined
+        ? (active as HTMLInputElement | HTMLTextAreaElement)
+        : (document.getElementById('task-text') as HTMLTextAreaElement | null)
+    if (field === null) {
+      return
+    }
+    const name = field.dataset.formula ?? 'text'
+    const focused = field === active
+    const start = focused ? (field.selectionStart ?? field.value.length) : field.value.length
+    const end = focused ? (field.selectionEnd ?? start) : start
+    const { value, cursor } = insertSnippet(field.value, start, end, kind)
+
+    if (name === 'text') {
+      updateTask(place, { text: value })
+    } else if (name === 'solution') {
+      updateTask(place, { solution: value })
+    } else {
+      const optionIndex = Number(name.replace('option-', ''))
+      updateTask(place, {
+        options: selected.options.map((item, index) => (index === optionIndex ? value : item)),
+      })
+    }
+    // Курсор ставим после того, как React запишет новое значение в поле.
+    window.requestAnimationFrame(() => {
+      field.focus()
+      field.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  const previewPieces = selected ? [selected.text, ...selected.options, selected.solution] : []
+  const unclosed = previewPieces.some((piece) => hasUnclosedDollar(piece))
+  const hasFormulas = previewPieces.some((piece) => piece.includes('$'))
+
   // Что не так с открытым заданием. Про пустой текст говорим только после
   // «Опубликовать» (иначе новое пустое задание сразу краснеет), а про ответ —
   // как только учитель начал заполнять задание.
@@ -298,7 +345,9 @@ export default function TaskTable({
                                 <span className="cell__text">
                                   {(busy || missing) && state && state.status !== 'ok'
                                     ? CELL_STATE[state.status]
-                                    : task?.text.slice(0, 28) || 'пусто'}
+                                    : task && task.text !== ''
+                                      ? <MathText text={shortenText(task.text, 28)} />
+                                      : 'пусто'}
                                 </span>
                               </button>
                             )
@@ -353,11 +402,33 @@ export default function TaskTable({
             </div>
           )}
 
-          <label className="label label--spaced" htmlFor="task-text">
+          <div className="formulabar" role="toolbar" aria-label="Вставить в формулу">
+            {SNIPPET_BUTTONS.map((button) => (
+              <button
+                key={button.kind}
+                type="button"
+                className="formulabar__btn"
+                title={button.title}
+                aria-label={button.title}
+                // Не забираем фокус у поля: вставка идёт туда, где стоит курсор.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => handleInsert(button.kind)}
+              >
+                {button.label}
+              </button>
+            ))}
+            <span className="hint">
+              Формулы — между знаками $: <code>{String.raw`$\frac{3}{5}$`}</code>. Кнопки вставляют
+              в то поле, где стоит курсор.
+            </span>
+          </div>
+
+          <label className="label" htmlFor="task-text">
             Текст задания
           </label>
           <textarea
             id="task-text"
+            data-formula="text"
             className={
               'textarea textarea--question' +
               (shownProblem?.field === 'text' ? ' input--invalid' : '')
@@ -402,6 +473,7 @@ export default function TaskTable({
                     </label>
                     <input
                       id={`task-option-${optionIndex}`}
+                      data-formula={`option-${optionIndex}`}
                       className={
                         'input' +
                         (shownProblem?.field === 'options' && option.trim() === ''
@@ -482,7 +554,8 @@ export default function TaskTable({
               <p className="hint">
                 Что должен ввести ученик. Если правильных записей несколько, перечислите их
                 через «|»: например «0,5 | 1/2». Регистр, лишние пробелы, запятую вместо точки
-                и «ё» вместо «е» мы учтём сами.
+                и «ё» вместо «е» мы учтём сами. Здесь без знаков $: дробь — 3/5, смешанное
+                число — 2 1/3.
               </p>
             </>
           )}
@@ -492,6 +565,7 @@ export default function TaskTable({
           </label>
           <textarea
             id="task-solution"
+            data-formula="solution"
             className="textarea textarea--question"
             value={selected.solution}
             onChange={(event) => updateTask(place, { solution: event.target.value })}
@@ -499,6 +573,41 @@ export default function TaskTable({
             placeholder="20 : 5 · 3 = 12"
           />
           <p className="hint">Необязательно. 1–2 строки, чтобы быстро сверить ответ.</p>
+
+          {/* ------------------------- Предпросмотр ------------------------- */}
+          {selected.text.trim() !== '' && (
+            <div className="taskpreview" aria-live="polite">
+              <p className="taskpreview__title">
+                {hasFormulas ? 'Так задание увидит ученик:' : 'Так задание увидит ученик (формул нет):'}
+              </p>
+              <p className="taskpreview__text">
+                <MathText text={selected.text} />
+              </p>
+              {selected.answerFormat === 'choice' && (
+                <ol>
+                  {selected.options.map((option, optionIndex) => (
+                    <li
+                      key={optionIndex}
+                      className={selected.correct === optionIndex ? 'taskpreview__correct' : undefined}
+                    >
+                      <MathText text={option} />
+                      {selected.correct === optionIndex && ' ✓'}
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {selected.solution.trim() !== '' && (
+                <p className="taskpreview__solution">
+                  Решение: <MathText text={selected.solution} />
+                </p>
+              )}
+              {unclosed && (
+                <p className="field-error">
+                  Не закрыт знак $ — формула после него показана как обычный текст.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* ------------------------- Замена через ИИ ------------------------- */}
           <div className="replace">

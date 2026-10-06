@@ -26,7 +26,9 @@ import {
   saveAttempt,
   saveProgress,
 } from '../lib/attemptStorage'
+import MathText, { MathFormula } from '../components/MathText'
 import { plural } from '../lib/checklist'
+import { answerPreviewLatex } from '../lib/formula'
 import { getOrCreateSeed, shuffleWithSeed } from '../lib/shuffle'
 import { usePageTitle } from '../lib/usePageTitle'
 import type { PublicTask, PublicTestInfo, StartedAttempt, StoredAttempt } from '../types'
@@ -37,6 +39,24 @@ type Loading =
   | { kind: 'loading' }
   | { kind: 'ready'; info: PublicTestInfo }
   | { kind: 'error'; message: string }
+
+/**
+ * Как ответ выглядит «по-тетрадному»: 3/5 — дробью, 2^3 — степенью.
+ * Ученик видит, что его запись понята так, как он задумал. Если в ответе
+ * нет ничего, что рисуется иначе (просто число или слово), блока нет.
+ */
+function AnswerPreview({ value }: { value: string }) {
+  const latex = answerPreviewLatex(value)
+  if (latex === null) {
+    return null
+  }
+  return (
+    <p className="answerpreview" aria-live="polite">
+      <span className="answerpreview__label">Ваш ответ выглядит так:</span>{' '}
+      <MathFormula latex={latex} source={value} />
+    </p>
+  )
+}
 
 export default function StudentTestPage() {
   const { code = '' } = useParams()
@@ -271,7 +291,7 @@ export default function StudentTestPage() {
                 <span className={item.is_correct ? 'mark mark--ok' : 'mark mark--bad'}>
                   {item.is_correct ? '✓' : '✗'}
                 </span>{' '}
-                {index + 1}. {textById.get(item.task_id) ?? `Задание ${item.position}`}
+                {index + 1}. <MathText text={textById.get(item.task_id) ?? `Задание ${item.position}`} />
               </p>
               {!item.answered && <p className="muted">Ответ не дан</p>}
             </li>
@@ -475,7 +495,7 @@ export default function StudentTestPage() {
             className={'question' + (showUnanswered && !isAnswered(task) ? ' question--missing' : '')}
           >
             <p className="question__text">
-              {index + 1}. {task.text}
+              {index + 1}. <MathText text={task.text} />
             </p>
             {task.answer_format === 'choice' && (
               <p className="hint">Выберите один вариант ответа.</p>
@@ -498,7 +518,9 @@ export default function StudentTestPage() {
                         checked={choices[task.id] === option.id}
                         onChange={() => handleChoose(task.id, option.id)}
                       />
-                      <span>{option.text}</span>
+                      <span>
+                        <MathText text={option.text} />
+                      </span>
                     </label>
                   </li>
                 ))}
@@ -516,7 +538,11 @@ export default function StudentTestPage() {
                   placeholder="Введите ответ"
                   autoComplete="off"
                 />
-                <p className="hint">Только ответ — число или слово, без решения.</p>
+                <AnswerPreview value={inputs[task.id] ?? ''} />
+                <p className="hint">
+                  Только ответ — число или слово, без решения. Дробь пишите через косую
+                  черту: 3/5, степень — через «^»: 2^3.
+                </p>
               </div>
             )}
           </li>

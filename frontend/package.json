@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "node scripts/check-formulas.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
+    "katex": "^0.16.47",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "^8.4.0"

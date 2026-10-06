@@ -21,6 +21,7 @@ import {
   updateTestSettings,
 } from '../api'
 import CopyLink from '../components/CopyLink'
+import MathText from '../components/MathText'
 import type { AttemptDetail, AttemptRow, ResultsOverview, SkillStat } from '../types'
 import { usePageTitle } from '../lib/usePageTitle'
 
@@ -531,25 +532,30 @@ export default function ResultsPage() {
                                       >
                                         {item.is_correct ? '✓' : '✗'}
                                       </span>{' '}
-                                      {item.position}. {item.text}
+                                      {item.position}. <MathText text={item.text} />
                                     </p>
                                     <p className="answer__line hint">{item.skill_title}</p>
                                     <p className="answer__line">
                                       Ответ ученика:{' '}
                                       {item.answered ? (
-                                        <b>{item.student_answer}</b>
+                                        <b>
+                                          <MathText text={item.student_answer ?? ''} />
+                                        </b>
                                       ) : (
                                         <i>не отвечал</i>
                                       )}
                                     </p>
                                     {!item.is_correct && (
                                       <p className="answer__line answer__line--correct">
-                                        Правильно: <b>{item.correct_answer}</b>
+                                        Правильно:{' '}
+                                        <b>
+                                          <MathText text={item.correct_answer} />
+                                        </b>
                                       </p>
                                     )}
                                     {item.solution !== '' && (
                                       <p className="answer__line muted">
-                                        Решение: {item.solution}
+                                        Решение: <MathText text={item.solution} />
                                       </p>
                                     )}
                                   </li>

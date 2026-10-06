@@ -1463,6 +1463,17 @@ code {
   max-width: 320px;
 }
 
+/* Как ответ выглядит формулой: 3/5 → дробь. */
+.answerpreview {
+  margin: var(--gap-xs) 0 0;
+  font-size: 1.15rem;
+}
+
+.answerpreview__label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* Крупное поле: ученик отвечает с телефона. */
 .input--answer {
   font-size: 1.15rem;
@@ -1829,4 +1840,92 @@ code {
 
 .skillwarn p {
   margin: 0 0 var(--gap-s);
+}
+
+
+/* ===================== Формулы (KaTeX) ===================== */
+
+/* Формула в строке текста: не даём ей разорвать строку посередине дроби. */
+.formula {
+  white-space: nowrap;
+}
+
+.formula--display {
+  display: block;
+  margin: var(--gap-xs) 0;
+  overflow-x: auto;
+}
+
+/* Формулу не разобрать — показан исходный текст. */
+.formula--broken {
+  white-space: normal;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9em;
+  text-decoration: underline wavy var(--bad);
+  text-underline-offset: 3px;
+}
+
+/* KaTeX по умолчанию крупнее текста на 21% — в строке задания это заметно. */
+.katex {
+  font-size: 1.1em;
+}
+
+/* Панель вставок над полями задания. */
+.formulabar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: var(--gap-m) 0 var(--gap-xs);
+}
+
+.formulabar__btn {
+  min-width: 38px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.formulabar__btn:hover {
+  border-color: var(--brand);
+}
+
+/* Предпросмотр задания под полями. */
+.taskpreview {
+  margin-top: var(--gap-m);
+  padding: var(--gap-m);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: #fafbfc;
+}
+
+.taskpreview__title {
+  margin: 0 0 var(--gap-xs);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.taskpreview__text {
+  margin: 0 0 var(--gap-xs);
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.taskpreview ol {
+  margin: 0 0 var(--gap-xs);
+  padding-left: 1.4em;
+  list-style: upper-alpha;
+}
+
+.taskpreview__correct {
+  font-weight: 600;
+}
+
+.taskpreview__solution {
+  margin: 0;
+  color: var(--muted);
 }

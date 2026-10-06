@@ -5,6 +5,13 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
 
+  build: {
+    // Шрифты KaTeX кладём файлами, а не строкой data: внутри CSS. Мелкие файлы
+    // Vite по умолчанию встраивает, а политика CSP на сервере (font-src 'self')
+    // шрифт из data: не пропустит — часть знаков в формулах пропала бы.
+    assetsInlineLimit: 0,
+  },
+
   server: {
     // host: по умолчанию Vite слушает 'localhost', а Node на Windows разворачивает
     // 'localhost' в IPv6-адрес ::1 — и сервер оказывается доступен ТОЛЬКО по IPv6.

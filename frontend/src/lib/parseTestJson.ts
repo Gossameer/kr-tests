@@ -13,6 +13,7 @@
 
 import type { AnswerFormat, SkillDraft, TaskDraft, VariantDraft } from '../types'
 import { FORMAT_NAMES } from '../types'
+import { fixLatexEscapes, insideFormula, plainAnswer } from './formula'
 
 export type ParseResult =
   | { ok: true; variants: VariantDraft[] }
@@ -80,7 +81,11 @@ export function emptyTask(skillIndex: number, format: AnswerFormat): TaskDraft {
  * «**» (жирный шрифт в markdown) не трогаем. То же делает сервер при генерации.
  */
 export function schoolSigns(text: string): string {
-  return text.replace(/(?<=[\p{L}\p{N}_)\]])\s*(?<!\*)\*(?!\*)\s*(?=[\p{L}\p{N}_([])|\s\*\s/gu, ' · ')
+  return text.replace(
+    /(?<=[\p{L}\p{N}_)\]])\s*(?<!\*)\*(?!\*)\s*(?=[\p{L}\p{N}_([])|\s\*\s/gu,
+    // Внутри формулы $…$ знак умножения — команда LaTeX.
+    (_, offset: number) => (insideFormula(text, offset) ? ' \\cdot ' : ' · '),
+  )
 }
 
 /** Разбирает одно задание из объекта ИИ. */
@@ -99,7 +104,7 @@ function readTask(source: Record<string, unknown>, skillIndex: number): TaskDraf
         : format === 'choice'
           ? null
           : null,
-    acceptedAnswers: format === 'input' ? asStringList(source.answers) : [],
+    acceptedAnswers: format === 'input' ? asStringList(source.answers).map(plainAnswer) : [],
     solution: schoolSigns(asString(source.solution)),
   }
 }
@@ -112,7 +117,7 @@ export function parseSingleTask(raw: string, skillIndex: number): ParseTaskResul
 
   let data: unknown
   try {
-    data = JSON.parse(extractJsonBlock(raw))
+    data = JSON.parse(fixLatexEscapes(extractJsonBlock(raw)))
   } catch (error: unknown) {
     const details = error instanceof Error ? error.message : String(error)
     return {
@@ -144,7 +149,7 @@ export function parseTestJson(raw: string): ParseResult {
 
   let data: unknown
   try {
-    data = JSON.parse(extractJsonBlock(raw))
+    data = JSON.parse(fixLatexEscapes(extractJsonBlock(raw)))
   } catch (error: unknown) {
     const details = error instanceof Error ? error.message : String(error)
     return {
