@@ -226,6 +226,17 @@ export function resultsExportUrl(testId: number): string {
   return `${API_URL}/api/tests/${testId}/export.xlsx`
 }
 
+/**
+ * Адрес файлов для печати (Word): 'print.zip' — варианты и ключ одним архивом,
+ * 'variants.docx' и 'key.docx' — по отдельности. Скачивает сам браузер.
+ */
+export function printFileUrl(
+  testId: number,
+  kind: 'print.zip' | 'variants.docx' | 'key.docx',
+): string {
+  return `${API_URL}/api/tests/${testId}/print/${kind}`
+}
+
 /** PATCH /api/tests/{id} — открыть или закрыть приём работ. */
 export async function updateTestSettings(
   testId: number,

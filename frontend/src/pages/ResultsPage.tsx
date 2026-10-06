@@ -22,6 +22,7 @@ import {
   deleteTest,
   fetchAttemptDetail,
   fetchResults,
+  printFileUrl,
   resultsExportUrl,
   updateTestClass,
   updateTestSettings,
@@ -401,11 +402,21 @@ export default function ResultsPage() {
             <button type="button" className="btn btn--ghost" onClick={handleRefresh}>
               Обновить
             </button>
+            <a className="btn btn--ghost" href={printFileUrl(testId, 'print.zip')}>
+              Скачать для печати
+            </a>
             <a className="btn btn--primary" href={resultsExportUrl(testId)}>
               Скачать Excel
             </a>
           </div>
         </div>
+        <p className="hint printhint">
+          «Скачать для печати» — архив с двумя файлами Word: варианты для учеников (каждый с
+          новой страницы, с местом для ответа) и ключ ответов для вас. Формулы в них —
+          настоящие формулы Word. По отдельности:{' '}
+          <a href={printFileUrl(testId, 'variants.docx')}>варианты</a>,{' '}
+          <a href={printFileUrl(testId, 'key.docx')}>ключ ответов</a>.
+        </p>
 
         {/* ---------- Ссылки по классам ---------- */}
         <div id="class-links" tabIndex={-1}>

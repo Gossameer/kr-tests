@@ -3,7 +3,10 @@
 
     GET    /api/tests/{id}/results                — таблица учеников и умений
     GET    /api/tests/{id}/attempts/{attempt_id}  — разбор одной работы
-    GET    /api/tests/{id}/export.xlsx            — выгрузка в Excel (3 листа)
+    GET    /api/tests/{id}/export.xlsx            — выгрузка в Excel (готова к печати)
+    GET    /api/tests/{id}/print/print.zip        — «Скачать для печати»: варианты и ключ (Word)
+    GET    /api/tests/{id}/print/variants.docx    — только варианты
+    GET    /api/tests/{id}/print/key.docx         — только ключ ответов
     PATCH  /api/tests/{id}                        — открыть/закрыть приём работ целиком
     POST   /api/tests/{id}/classes                — добавить класс (новая ссылка)
     PATCH  /api/tests/{id}/classes/{class_id}     — открыть/закрыть приём по классу
@@ -15,16 +18,12 @@
 ссылок больше нет — чужую проверочную работу не открыть, даже зная её номер.
 """
 
-import io
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from psycopg import errors as pg_errors
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
 
-from app import db
+from app import db, docx_export, xlsx_export
 from app.auth import can_manage_test, forbidden, require_user
 from app.routers.tests import add_class_link
 from app.schemas import (
@@ -40,15 +39,6 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tests", tags=["results"])
-
-# Пороги освоения умения. Ниже 50% — не сформировано, выше 65% — в порядке.
-LEVEL_LOW = 50
-LEVEL_MID = 65
-
-# Заливка ячеек в Excel теми же порогами, что и цвета на экране.
-FILL_LOW = PatternFill("solid", fgColor="F8CBCB")
-FILL_MID = PatternFill("solid", fgColor="FFE9B0")
-FILL_HIGH = PatternFill("solid", fgColor="CDEBD3")
 
 
 def db_unavailable() -> HTTPException:
@@ -71,15 +61,6 @@ def percent_of(correct: int | None, total: int | None) -> int:
     if not correct or not total:
         return 0
     return round(correct * 100 / total)
-
-
-def fill_for(percent: int) -> PatternFill:
-    """Заливка ячейки по проценту выполнения."""
-    if percent < LEVEL_LOW:
-        return FILL_LOW
-    if percent <= LEVEL_MID:
-        return FILL_MID
-    return FILL_HIGH
 
 
 def load_test_for_user(conn, test_id: int, user: dict) -> dict:
@@ -405,28 +386,138 @@ def get_attempt_detail(
     )
 
 
+def load_task_marks(conn, test_id: int) -> dict[int, dict[int, bool]]:
+    """{id попытки: {номер задания в варианте: верно?}} — баллы по заданиям для Excel."""
+    rows = conn.execute(
+        """
+        SELECT ans.attempt_id, t.position, ans.is_correct
+        FROM answers ans
+        JOIN tasks t      ON t.id = ans.task_id
+        JOIN attempts att ON att.id = ans.attempt_id
+        WHERE att.test_id = %s AND att.annulled_at IS NULL
+        """,
+        (test_id,),
+    ).fetchall()
+    marks: dict[int, dict[int, bool]] = {}
+    for row in rows:
+        marks.setdefault(row["attempt_id"], {})[row["position"]] = row["is_correct"]
+    return marks
+
+
+def load_print_variants(conn, test_id: int) -> dict[int, list[dict]]:
+    """
+    Все задания работы по вариантам — с ответами и умениями: для печати и ключа.
+    {номер варианта: [задания по порядку]}.
+    """
+    task_rows = conn.execute(
+        """
+        SELECT t.id, t.variant_no, t.position, t.text, t.answer_format,
+               t.accepted_answers, s.title AS skill_title, s.position AS skill_position
+        FROM tasks t
+        JOIN skills s ON s.id = t.skill_id
+        WHERE t.test_id = %s
+        ORDER BY t.variant_no, t.position, t.id
+        """,
+        (test_id,),
+    ).fetchall()
+    option_rows = conn.execute(
+        """
+        SELECT o.task_id, o.text, o.is_correct
+        FROM task_options o
+        JOIN tasks t ON t.id = o.task_id
+        WHERE t.test_id = %s
+        ORDER BY o.position, o.id
+        """,
+        (test_id,),
+    ).fetchall()
+
+    options: dict[int, list[dict]] = {}
+    for option in option_rows:
+        options.setdefault(option["task_id"], []).append(option)
+
+    variants: dict[int, list[dict]] = {}
+    for task in task_rows:
+        own = options.get(task["id"], [])
+        variants.setdefault(task["variant_no"], []).append(
+            {
+                "text": task["text"],
+                "answer_format": task["answer_format"],
+                "options": [option["text"] for option in own],
+                "correct": next(
+                    (index for index, option in enumerate(own) if option["is_correct"]), None
+                ),
+                "accepted_answers": task["accepted_answers"],
+                "skill_title": f"{task['skill_position']}. {task['skill_title']}",
+            }
+        )
+    return variants
+
+
+def file_response(content: bytes, filename: str, media_type: str) -> Response:
+    # Имя файла только из латиницы и цифр: кириллица в Content-Disposition
+    # ломается в части браузеров.
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get(
+    "/{test_id}/print/{kind}",
+    summary="Скачать для печати: варианты и ключ ответов (Word)",
+    response_class=Response,
+)
+def print_files(
+    test_id: int = Path(ge=1),
+    kind: str = Path(description="variants.docx, key.docx или print.zip (оба файла)"),
+    user: dict = Depends(require_user),
+) -> Response:
+    """
+    «Варианты» — для учеников: каждый вариант с новой страницы, с шапкой и
+    местом для ответа. «Ключ ответов» — для учителя. Формулы — формулами Word.
+    """
+    if kind not in ("variants.docx", "key.docx", "print.zip"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Такого файла нет.")
+
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_for_user(conn, test_id, user)
+        variants = load_print_variants(conn, test_row["id"])
+
+    code = test_row["share_token"]
+    if kind == "variants.docx":
+        return file_response(docx_export.build_variants(test_row, variants), f"variants-{code}.docx", DOCX_TYPE)
+    if kind == "key.docx":
+        return file_response(docx_export.build_key(test_row, variants), f"key-{code}.docx", DOCX_TYPE)
+    archive = docx_export.build_zip(
+        code, docx_export.build_variants(test_row, variants), docx_export.build_key(test_row, variants)
+    )
+    return file_response(archive, f"print-{code}.zip", "application/zip")
+
+
 @router.get(
     "/{test_id}/export.xlsx",
     summary="Выгрузить результаты в Excel",
     response_class=Response,
-    responses={
-        200: {
-            "content": {
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
-            },
-            "description": "Файл .xlsx",
-        }
-    },
+    responses={200: {"content": {XLSX_TYPE: {}}, "description": "Файл .xlsx"}},
 )
 def export_results(
     test_id: int = Path(ge=1),
     user: dict = Depends(require_user),
 ) -> Response:
     """
-    Три листа:
-      «Ученики» — класс, ФИО, вариант, балл, процент, время сдачи;
-      «Умения»  — матрица «ученик × умение» с цветом и строкой по классу;
-      «Задания» — все задания по вариантам с ответом, решением и статистикой.
+    Листы «Результаты» (баллы по заданиям), «По умениям» (умение × класс) и
+    «Задания». Только сданные и не аннулированные работы. Оформление и
+    настройки печати — в app/xlsx_export.py.
     """
     try:
         pool = db.get_pool()
@@ -438,11 +529,15 @@ def export_results(
         test_id = test_row["id"]
 
         skills = load_skills(conn, test_id)
-        attempts = load_attempts(conn, test_id)
+        attempts = [
+            attempt
+            for attempt in load_attempts(conn, test_id)
+            if not attempt["annulled"] and attempt["finished_at"] is not None
+        ]
         matrix = load_skill_matrix(conn, test_id)
-        skill_stats = load_skill_stats(conn, test_id, skills)
+        marks = load_task_marks(conn, test_id)
 
-        # Все задания с их статистикой — для третьего листа.
+        # Все задания с их статистикой — для листа «Задания».
         task_rows = conn.execute(
             """
             SELECT t.id, t.variant_no, t.position, t.text, t.answer_format,
@@ -454,7 +549,12 @@ def export_results(
             JOIN skills s ON s.id = t.skill_id
             LEFT JOIN task_options right_option
                    ON right_option.task_id = t.id AND right_option.is_correct
-            LEFT JOIN answers ans ON ans.task_id = t.id
+            LEFT JOIN (
+                SELECT a.id, a.task_id, a.is_correct
+                FROM answers a
+                JOIN attempts att ON att.id = a.attempt_id
+                WHERE att.annulled_at IS NULL AND att.finished_at IS NOT NULL
+            ) ans ON ans.task_id = t.id
             WHERE t.test_id = %s
             GROUP BY t.id, t.variant_no, t.position, t.text, t.answer_format,
                      t.accepted_answers, t.solution, s.title, right_option.text
@@ -463,139 +563,8 @@ def export_results(
             (test_id,),
         ).fetchall()
 
-    workbook = Workbook()
-
-    # ---------- Лист 1: ученики ----------
-    sheet = workbook.active
-    sheet.title = "Ученики"
-    sheet.append(["Класс", "ФИО", "Вариант", "Балл", "Максимум", "%", "Время сдачи"])
-
-    for attempt in attempts:
-        finished: datetime | None = attempt["finished_at"]
-        sheet.append(
-            [
-                attempt["student_class"],
-                attempt["student_name"],
-                attempt["variant_no"],
-                attempt["score"] or 0,
-                attempt["max_score"] or 0,
-                percent_of(attempt["score"], attempt["max_score"]),
-                # Excel не хранит часовой пояс — приводим к местному времени.
-                finished.astimezone().replace(tzinfo=None) if finished else None,
-            ]
-        )
-
-    for cell in sheet[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-    sheet.freeze_panes = "A2"
-    for row in sheet.iter_rows(min_row=2, min_col=7, max_col=7):
-        for cell in row:
-            cell.number_format = "DD.MM.YYYY HH:MM"
-    for letter, width in zip("ABCDEFG", (10, 28, 9, 8, 11, 7, 18)):
-        sheet.column_dimensions[letter].width = width
-
-    # ---------- Лист 2: умения ----------
-    skills_sheet = workbook.create_sheet("Умения")
-    skills_sheet.append(
-        ["Класс", "ФИО"] + [f"{skill['position']}. {skill['title']}" for skill in skills]
-    )
-
-    for attempt in attempts:
-        row_values = [attempt["student_class"], attempt["student_name"]]
-        for skill in skills:
-            cell = matrix.get((attempt["id"], skill["id"]))
-            row_values.append(percent_of(cell["correct"], cell["total"]) if cell else None)
-        skills_sheet.append(row_values)
-
-    # Последняя строка — итог по всем работам (то же, что «строка по классу» на экране).
-    skills_sheet.append(
-        ["", "Итого по классу"] + [stat["percent"] for stat in skill_stats]
-    )
-
-    for cell in skills_sheet[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    for cell in skills_sheet[skills_sheet.max_row]:
-        cell.font = Font(bold=True)
-    skills_sheet.freeze_panes = "C2"
-
-    # Цвет по тем же порогам, что и на экране: <50 красный, 50–65 жёлтый, >65 зелёный.
-    for row in skills_sheet.iter_rows(min_row=2, min_col=3):
-        for cell in row:
-            if isinstance(cell.value, int):
-                cell.fill = fill_for(cell.value)
-                cell.number_format = '0"%"'
-                cell.alignment = Alignment(horizontal="center")
-
-    skills_sheet.column_dimensions["A"].width = 10
-    skills_sheet.column_dimensions["B"].width = 28
-    for index in range(len(skills)):
-        letter = skills_sheet.cell(row=1, column=3 + index).column_letter
-        skills_sheet.column_dimensions[letter].width = 16
-
-    # ---------- Лист 3: задания ----------
-    tasks_sheet = workbook.create_sheet("Задания")
-    tasks_sheet.append(
-        [
-            "Вариант",
-            "№",
-            "Умение",
-            "Задание",
-            "Формат",
-            "Правильный ответ",
-            "Решение",
-            "Верно",
-            "Ответов",
-            "%",
-        ]
-    )
-
-    for task in task_rows:
-        if task["answer_format"] == "choice":
-            correct_answer = task["right_option_text"] or ""
-            format_name = "выбор"
-        else:
-            correct_answer = " / ".join(task["accepted_answers"])
-            format_name = "ввод"
-
-        tasks_sheet.append(
-            [
-                task["variant_no"],
-                task["position"],
-                task["skill_title"],
-                task["text"],
-                format_name,
-                correct_answer,
-                task["solution"],
-                task["correct"],
-                task["answered"],
-                percent_of(task["correct"], task["answered"]),
-            ]
-        )
-
-    for cell in tasks_sheet[1]:
-        cell.font = Font(bold=True)
-    tasks_sheet.freeze_panes = "A2"
-    for letter, width in zip("ABCDEFGHIJ", (9, 5, 24, 52, 9, 22, 40, 8, 9, 7)):
-        tasks_sheet.column_dimensions[letter].width = width
-    for row in tasks_sheet.iter_rows(min_row=2, min_col=4, max_col=4):
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    buffer.seek(0)
-
-    # Имя файла только из латиницы и цифр: кириллица в Content-Disposition
-    # ломается в части браузеров.
-    filename = f"results-{test_row['share_token']}.xlsx"
-
-    return Response(
-        content=buffer.getvalue(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    content = xlsx_export.build_results_xlsx(test_row, skills, attempts, marks, matrix, task_rows)
+    return file_response(content, f"results-{test_row['share_token']}.xlsx", XLSX_TYPE)
 
 
 # =====================================================================
