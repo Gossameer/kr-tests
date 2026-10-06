@@ -18,13 +18,21 @@
  */
 
 import { useState } from 'react'
-import { countNeedsReview, needsReview, replaceTaskAt, reviewHint } from '../lib/aiJob'
+import {
+  cellBusy,
+  cellMissing,
+  countNeedsReview,
+  needsReview,
+  replaceTaskAt,
+  reviewHint,
+  reviewLines,
+} from '../lib/aiJob'
 import type { TaskPlace } from '../lib/aiJob'
 import { buildReplacePrompt } from '../lib/aiPrompt'
 import type { PromptFields } from '../lib/aiPrompt'
-import { cellId, retryId } from '../lib/checklist'
+import { cellId } from '../lib/checklist'
 import { parseSingleTask, taskProblem } from '../lib/parseTestJson'
-import type { SkillDraft, TaskDraft, VariantDraft } from '../types'
+import type { AiCellStatus, SkillDraft, TaskDraft, VariantDraft } from '../types'
 
 type Props = {
   skills: SkillDraft[]
@@ -35,8 +43,6 @@ type Props = {
   aiEnabled?: boolean
   /** Перегенерировать одно задание на сервере. */
   onRegenerate?: (place: TaskPlace) => Promise<void>
-  /** Повторить вариант, который не удался при генерации. */
-  onRetryVariant?: (variantNo: number) => Promise<void>
   /** Учитель уже нажимал «Опубликовать» — показываем все ошибки, даже в нетронутых полях. */
   showErrors?: boolean
 }
@@ -44,11 +50,13 @@ type Props = {
 /** Где именно лежит задание: вариант, умение и номер задания внутри умения. */
 type Place = TaskPlace
 
-/** Подпись состояния варианта в шапке таблицы. */
-const VARIANT_STATE: Record<string, string> = {
-  pending: 'в очереди',
+/** Что написать в клетке, пока в ней нет задания от ИИ. */
+const CELL_STATE: Record<Exclude<AiCellStatus, 'ok'>, string> = {
+  pending: 'в очереди…',
   running: 'составляется…',
-  failed: 'не удался',
+  checking: 'проверяется…',
+  failed: 'не удалось',
+  interrupted: 'прервано',
 }
 
 /** Заполнено ли задание настолько, чтобы его можно было публиковать. */
@@ -65,7 +73,6 @@ export default function TaskTable({
   onChange,
   aiEnabled = false,
   onRegenerate,
-  onRetryVariant,
   showErrors = false,
 }: Props) {
   const [place, setPlace] = useState<Place | null>(null)
@@ -73,9 +80,8 @@ export default function TaskTable({
   const [replaceErrors, setReplaceErrors] = useState<string[]>([])
   const [promptCopied, setPromptCopied] = useState(false)
   const [onlyReview, setOnlyReview] = useState(false)
-  // Какое задание сейчас перегенерируется (ключ места) и какие варианты повторяются.
+  // Какое задание сейчас перегенерируется (ключ места).
   const [regenerating, setRegenerating] = useState<string | null>(null)
-  const [retrying, setRetrying] = useState<number[]>([])
   const [aiProblem, setAiProblem] = useState('')
 
   const reviewCount = countNeedsReview(variants)
@@ -117,21 +123,6 @@ export default function TaskTable({
       setAiProblem(error instanceof Error ? error.message : 'Не удалось сгенерировать задание.')
     } finally {
       setRegenerating(null)
-    }
-  }
-
-  async function handleRetry(variantNo: number) {
-    if (!onRetryVariant) {
-      return
-    }
-    setRetrying((list) => [...list, variantNo])
-    setAiProblem('')
-    try {
-      await onRetryVariant(variantNo)
-    } catch (error: unknown) {
-      setAiProblem(error instanceof Error ? error.message : 'Не удалось повторить вариант.')
-    } finally {
-      setRetrying((list) => list.filter((item) => item !== variantNo))
     }
   }
 
@@ -206,7 +197,8 @@ export default function TaskTable({
             <span>показать только их</span>
           </label>
           <span className="hint">
-            ИИ решил эти задания заново и получил другой ответ — сверьте ответ и решение.
+            У этих заданий самопроверка ИИ не сошлась, не выполнилась или есть замечание
+            к условию. Нажмите на жёлтую клетку — там написано, что именно.
           </span>
         </div>
       )}
@@ -220,37 +212,7 @@ export default function TaskTable({
             <tr>
               <th>Умение</th>
               {variants.map((variant) => (
-                <th key={variant.variantNo}>
-                  Вариант {variant.variantNo}
-                  {variant.aiStatus && variant.aiStatus !== 'ok' && (
-                    <span
-                      className={
-                        'varstate' + (variant.aiStatus === 'failed' ? ' varstate--failed' : '')
-                      }
-                    >
-                      {VARIANT_STATE[variant.aiStatus]}
-                    </span>
-                  )}
-                  {variant.aiStatus === 'failed' && onRetryVariant && (
-                    <button
-                      id={retryId(variant.variantNo)}
-                      type="button"
-                      className="btn btn--small btn--ghost varstate__retry"
-                      onClick={() => void handleRetry(variant.variantNo)}
-                      disabled={retrying.includes(variant.variantNo)}
-                    >
-                      {retrying.includes(variant.variantNo) ? '…' : 'повторить'}
-                    </button>
-                  )}
-                  {variant.aiStatus === 'failed' && variant.aiError && (
-                    // Причина бывает длинной — показываем начало, целиком — в подсказке.
-                    <span className="varstate__error" title={variant.aiError}>
-                      {variant.aiError.length > 60
-                        ? `${variant.aiError.slice(0, 57)}…`
-                        : variant.aiError}
-                    </span>
-                  )}
-                </th>
+                <th key={variant.variantNo}>Вариант {variant.variantNo}</th>
               ))}
             </tr>
           </thead>
@@ -288,6 +250,11 @@ export default function TaskTable({
                               place?.order === order
                             const ready = task ? isReady(task) : false
                             const review = task ? needsReview(task) : false
+                            // Состояние клетки на сервере: пока задания нет,
+                            // показываем, что с ней происходит.
+                            const state = variant.aiCells?.[skillIndex]
+                            const busy = !ready && cellBusy(state)
+                            const missing = !ready && cellMissing(state)
 
                             if (filtering && !review) {
                               // Пустое место вместо клетки: строки не прыгают по высоте.
@@ -303,8 +270,13 @@ export default function TaskTable({
                                   'cell' +
                                   (ready ? ' cell--ready' : ' cell--empty') +
                                   (review ? ' cell--review' : '') +
+                                  (busy ? ' cell--busy' : '') +
+                                  (missing ? ' cell--failed' : '') +
                                   (active ? ' cell--active' : '')
                                 }
+                                // Пока ИИ работает над клеткой, править её рано:
+                                // готовое задание заменит то, что успели ввести.
+                                disabled={busy}
                                 onClick={() => {
                                   setPlace({
                                     variantNo: variant.variantNo,
@@ -317,12 +289,16 @@ export default function TaskTable({
                                 title={
                                   task && review
                                     ? `${task.text}\n${reviewHint(task)}`
-                                    : task?.text || 'Задание не заполнено'
+                                    : missing && state
+                                      ? `${state.error || 'Задание не составлено'}\nНажмите, чтобы заполнить вручную.`
+                                      : task?.text || 'Задание не заполнено'
                                 }
                               >
-                                {review ? '!' : ready ? '✓' : '—'}
+                                {review ? '!' : ready ? '✓' : missing ? '✕' : '—'}
                                 <span className="cell__text">
-                                  {task?.text.slice(0, 28) || 'пусто'}
+                                  {(busy || missing) && state && state.status !== 'ok'
+                                    ? CELL_STATE[state.status]
+                                    : task?.text.slice(0, 28) || 'пусто'}
                                 </span>
                               </button>
                             )
@@ -359,21 +335,20 @@ export default function TaskTable({
 
           {selected.review && (
             <div className="reviewnote">
-              <p>
-                {selected.review.status === 'unchecked'
-                  ? 'Самопроверка не выполнилась — сверьте ответ сами.'
-                  : 'ИИ решил задание заново и получил другой ответ.'}
-              </p>
-              <p>
-                При генерации: <b>{selected.review.generated}</b> · при проверке:{' '}
-                <b>{selected.review.checked}</b>
-              </p>
+              {selected.review.status === 'mismatch' && (
+                <p>ИИ решил задание заново и получил другой ответ.</p>
+              )}
+              {reviewLines(selected).map((line) => (
+                <p key={line}>{line}</p>
+              ))}
               <button
                 type="button"
                 className="btn btn--small btn--ghost"
                 onClick={() => updateTask(place, { review: null })}
               >
-                Ответ верный — снять отметку
+                {selected.review.status === 'mismatch'
+                  ? 'Ответ верный — снять отметку'
+                  : 'Проверил(а) — снять отметку'}
               </button>
             </div>
           )}

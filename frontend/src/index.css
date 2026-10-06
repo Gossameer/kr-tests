@@ -1782,3 +1782,51 @@ code {
 .cellsub.hint--bad {
   color: var(--bad);
 }
+
+/* ===================== Клетки таблицы во время генерации ===================== */
+
+/* Клетка в работе у ИИ: составляется или проверяется. */
+.cell--busy,
+.cell--busy:disabled {
+  border-style: dashed;
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--muted);
+  cursor: progress;
+  animation: cell-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes cell-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* Движение — только тем, кто его не отключил. */
+@media (prefers-reduced-motion: reduce) {
+  .cell--busy {
+    animation: none;
+  }
+}
+
+/* Клетку не удалось составить: её можно догенерировать или заполнить вручную. */
+.cell--failed {
+  border-style: dashed;
+  border-color: var(--bad);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+/* Предупреждение у умения: выбранный формат ответа не подходит для таких заданий. */
+.skillwarn {
+  margin-top: var(--gap-s);
+  padding: var(--gap-s) var(--gap-m);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  font-size: 0.9rem;
+}
+
+.skillwarn p {
+  margin: 0 0 var(--gap-s);
+}

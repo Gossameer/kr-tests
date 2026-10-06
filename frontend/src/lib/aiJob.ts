@@ -7,7 +7,14 @@
  */
 
 import { emptyTask } from './parseTestJson'
-import type { AiJob, AiTask, SkillDraft, TaskDraft, VariantDraft } from '../types'
+import type {
+  AiCellState,
+  AiJob,
+  AiTask,
+  SkillDraft,
+  TaskDraft,
+  VariantDraft,
+} from '../types'
 
 /** Задание из ответа сервера → задание таблицы проверки. */
 export function taskFromAi(task: AiTask): TaskDraft {
@@ -19,15 +26,16 @@ export function taskFromAi(task: AiTask): TaskDraft {
     correct: task.answer_format === 'choice' ? task.correct : null,
     acceptedAnswers: task.answer_format === 'input' ? task.accepted_answers : [],
     solution: task.solution,
-    // Совпавшие ответы учителю неинтересны — храним только расхождения.
-    review:
-      task.review.status === 'ok'
-        ? null
-        : {
-            status: task.review.status,
-            generated: task.review.generated,
-            checked: task.review.checked,
-          },
+    // Задания без вопросов учителю неинтересны — храним только то, что стоит посмотреть:
+    // расхождение, невыполненную самопроверку или замечание к самому заданию.
+    review: task.needs_review
+      ? {
+          status: task.review.status,
+          generated: task.review.generated,
+          checked: task.review.checked,
+          warning: task.review.warning ?? '',
+        }
+      : null,
   }
 }
 
@@ -36,12 +44,32 @@ export function needsReview(task: TaskDraft): boolean {
   return Boolean(task.review)
 }
 
-/** Подсказка к заданию с расхождением: «при генерации: 2,5 · при проверке: 25». */
-export function reviewHint(task: TaskDraft): string {
-  if (!task.review) {
-    return ''
+/** Что именно не так с заданием — строками, для карточки и подсказки. */
+export function reviewLines(task: TaskDraft): string[] {
+  const review = task.review
+  if (!review) {
+    return []
   }
-  return `при генерации: ${task.review.generated} · при проверке: ${task.review.checked}`
+  const lines: string[] = []
+  if (review.warning) {
+    // «ответ виден в условии; ввод не различает регистр…» → с заглавной буквы.
+    lines.push(review.warning.charAt(0).toUpperCase() + review.warning.slice(1) + '.')
+  }
+  if (review.status === 'mismatch') {
+    lines.push(`При генерации: ${review.generated} · при проверке: ${review.checked}`)
+  } else if (review.status === 'unchecked') {
+    lines.push(
+      `Самопроверка не выполнилась: ${review.checked || 'причина неизвестна'}. Сверьте ответ сами.`,
+    )
+  }
+  return lines
+}
+
+/** Подсказка к клетке: «при генерации: 2,5 · при проверке: 25» или причина. */
+export function reviewHint(task: TaskDraft): string {
+  return reviewLines(task)
+    .map((line) => line.charAt(0).toLowerCase() + line.slice(1))
+    .join('\n')
 }
 
 export function countNeedsReview(variants: VariantDraft[]): number {
@@ -61,12 +89,13 @@ export function emptyTasks(skills: SkillDraft[]): TaskDraft[] {
 }
 
 /**
- * Переносит свежий статус генерации в таблицу.
+ * Переносит свежий статус генерации в таблицу — по клеткам «умение × вариант».
  *
- * Готовый вариант переносится ОДИН раз (по номеру версии): если учитель уже
- * правит задания, очередной опрос сервера не затрёт его правки. Не готовые
- * варианты остаются пустыми, но получают статус — в таблице видно,
- * какой ещё идёт, а какой не удался.
+ * Готовая клетка переносится ОДИН раз (по номеру версии): как только она
+ * составлена и проверена, она появляется в таблице, а если учитель уже правит
+ * её задания, следующий опрос сервера его правки не затрёт. Остальные клетки
+ * остаются пустыми, но получают статус — видно, что ещё составляется,
+ * что проверяется, а что не удалось.
  */
 export function mergeJob(previous: VariantDraft[], job: AiJob): VariantDraft[] {
   // Пустые задания строим по умениям, с которыми запускали генерацию,
@@ -77,28 +106,51 @@ export function mergeJob(previous: VariantDraft[], job: AiJob): VariantDraft[] {
     answerFormat: skill.answer_format,
   }))
   const byNumber = new Map(previous.map((variant) => [variant.variantNo, variant]))
+  const cellAt = new Map(job.cells.map((cell) => [`${cell.variant_no}:${cell.skill_index}`, cell]))
 
-  return job.variants.map((source) => {
-    const old = byNumber.get(source.variant_no)
+  return Array.from({ length: job.variants_count }, (_, index) => {
+    const variantNo = index + 1
+    const old = byNumber.get(variantNo)
+    const aiCells: Record<number, AiCellState> = {}
 
-    if (source.status === 'ok' && (old?.aiVersion ?? 0) < source.version) {
-      return {
-        variantNo: source.variant_no,
-        tasks: source.tasks.map(taskFromAi),
-        aiStatus: 'ok',
-        aiError: '',
-        aiVersion: source.version,
+    const tasks = skills.flatMap((skill, position) => {
+      const skillIndex = position + 1
+      const cell = cellAt.get(`${variantNo}:${skillIndex}`)
+      const applied = old?.aiCells?.[skillIndex]?.version ?? 0
+      const kept = old?.tasks.filter((task) => task.skillIndex === skillIndex) ?? []
+      const current =
+        kept.length === skill.tasksPerVariant
+          ? kept
+          : Array.from({ length: skill.tasksPerVariant }, () =>
+              emptyTask(skillIndex, skill.answerFormat),
+            )
+
+      if (!cell) {
+        return current
       }
-    }
+      if (cell.status === 'ok' && cell.version > applied) {
+        aiCells[skillIndex] = { status: 'ok', version: cell.version, error: '' }
+        return cell.tasks.map(taskFromAi)
+      }
+      aiCells[skillIndex] = { status: cell.status, version: applied, error: cell.error }
+      return current
+    })
 
-    return {
-      variantNo: source.variant_no,
-      tasks: old && old.tasks.length > 0 ? old.tasks : emptyTasks(skills),
-      aiStatus: source.status,
-      aiError: source.error,
-      aiVersion: old?.aiVersion ?? 0,
-    }
+    return { variantNo, tasks, aiCells }
   })
+}
+
+/** Клетка ещё в работе на сервере: в очереди, составляется или проверяется. */
+export function cellBusy(state: AiCellState | undefined): boolean {
+  return (
+    state !== undefined &&
+    (state.status === 'pending' || state.status === 'running' || state.status === 'checking')
+  )
+}
+
+/** Клетку не удалось составить (ИИ не справился или сервер перезапустили). */
+export function cellMissing(state: AiCellState | undefined): boolean {
+  return state !== undefined && (state.status === 'failed' || state.status === 'interrupted')
 }
 
 /** Где лежит задание: вариант, умение и номер задания внутри умения. */

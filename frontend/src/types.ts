@@ -45,22 +45,37 @@ export type TaskDraft = {
   review?: TaskReview | null
 }
 
-/** Расхождение ответов: что ответил ИИ при генерации и при самопроверке. */
+/**
+ * Почему задание стоит посмотреть:
+ *   mismatch  — при самопроверке ИИ получил другой ответ (generated ≠ checked);
+ *   unchecked — самопроверка не выполнилась, в checked — короткая причина;
+ *   ok        — ответы сошлись, но есть замечание к самому заданию (warning).
+ */
 export type TaskReview = {
-  status: 'mismatch' | 'unchecked'
+  status: 'ok' | 'mismatch' | 'unchecked'
   generated: string
   checked: string
+  /** Замечание к заданию: «ответ виден в условии» и т. п. Пусто — замечаний нет. */
+  warning?: string
 }
 
 /** Один вариант проверочной работы. */
 export type VariantDraft = {
   variantNo: number
   tasks: TaskDraft[]
-  /** Состояние варианта при генерации через ИИ (нет поля — вариант составлен вручную). */
-  aiStatus?: AiVariantStatus
-  aiError?: string
+  /**
+   * Состояние клеток этого варианта при генерации через ИИ: ключ — номер умения.
+   * Нет поля — вариант составлен вручную.
+   */
+  aiCells?: Record<number, AiCellState>
+}
+
+/** Что известно о клетке «умение × вариант» в таблице проверки. */
+export type AiCellState = {
+  status: AiCellStatus
   /** Какая версия результата ИИ уже перенесена в таблицу. */
-  aiVersion?: number
+  version: number
+  error: string
 }
 
 /** Тело POST /api/tests */
@@ -432,7 +447,11 @@ export type AiStatus = {
   used_today: number
 }
 
-export type AiVariantStatus = 'pending' | 'running' | 'ok' | 'failed'
+/**
+ * Состояние клетки: в очереди → составляется → проверяется → готова.
+ * failed — ИИ не справился; interrupted — сервер перезапустили посреди работы.
+ */
+export type AiCellStatus = 'pending' | 'running' | 'checking' | 'ok' | 'failed' | 'interrupted'
 
 /** Задание из результата генерации (поля — как в TaskIn на бэкенде). */
 export type AiTask = {
@@ -444,14 +463,19 @@ export type AiTask = {
   accepted_answers: string[]
   solution: string
   needs_review: boolean
-  review: { status: 'ok' | 'mismatch' | 'unchecked'; generated: string; checked: string }
+  review: {
+    status: 'ok' | 'mismatch' | 'unchecked'
+    generated: string
+    checked: string
+    warning?: string
+  }
 }
 
-export type AiVariant = {
+/** Клетка результата: задания одного умения в одном варианте. */
+export type AiCell = {
   variant_no: number
-  status: AiVariantStatus
-  /** Что сейчас делается с вариантом: составление или самопроверка. */
-  stage: '' | 'generate' | 'check'
+  skill_index: number
+  status: AiCellStatus
   attempts: number
   version: number
   error: string
@@ -464,16 +488,25 @@ export type AiJob = {
   kind: 'test' | 'task'
   status: 'running' | 'done' | 'failed'
   error: string
+  variants_count: number
+  /** Прогресс считается по клеткам «умение × вариант». */
   total: number
+  /** Готовых клеток (составлены и проверены). */
   done: number
-  ok: number
   failed: number
+  /** Клеток, прерванных перезапуском сервера. */
+  interrupted_cells: number
+  /** Сейчас составляется (или ждёт очереди) и проходит самопроверку. */
+  generating: number
+  checking: number
+  /** Сервер перезапустили посреди генерации — есть что догенерировать. */
+  interrupted: boolean
   needs_review: number
   /** С чем запускали генерацию: умения нужны, чтобы разложить задания по таблице. */
   request: {
     skills: { title: string; tasks_per_variant: number; answer_format: AnswerFormat }[]
   }
-  variants: AiVariant[]
+  cells: AiCell[]
   task: AiTask | null
 }
 

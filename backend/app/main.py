@@ -73,6 +73,13 @@ async def lifespan(app: FastAPI):
             settings.smtp_port,
             settings.mail_from or "не задан (SMTP_FROM)",
         )
+        if not settings.smtp_password.isascii():
+            # Не ошибка сама по себе (пароль уйдёт в UTF-8), но чаще всего это
+            # заглушка или буквы, набранные в русской раскладке. Сам пароль не пишем.
+            logger.warning(
+                "В SMTP_PASSWORD есть не-латинские символы. Если это не опечатка — всё "
+                "в порядке; иначе почтовый сервер ответит «не принял логин или пароль»."
+            )
     else:
         logger.info(
             "Почта не настроена (SMTP_HOST пуст) — тестовый режим: письма пишутся в лог"

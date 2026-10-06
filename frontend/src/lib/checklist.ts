@@ -6,7 +6,7 @@
  * задания — id клетки таблицы (открыть редактор) и поле внутри редактора.
  */
 
-import { needsReview } from './aiJob'
+import { cellMissing, needsReview } from './aiJob'
 import { taskProblem } from './parseTestJson'
 import type { AiJob, SkillDraft, VariantDraft } from '../types'
 
@@ -29,10 +29,8 @@ export function cellId(variantNo: number, skillIndex: number, order: number): st
   return `cell-${variantNo}-${skillIndex}-${order}`
 }
 
-/** id кнопки «повторить» у варианта, который не составился. */
-export function retryId(variantNo: number): string {
-  return `retry-${variantNo}`
-}
+/** id кнопки «Догенерировать недостающее». */
+export const RESUME_ID = 'ai-resume'
 
 /** 1 задание, 2 задания, 5 заданий. */
 export function plural(count: number, one: string, few: string, many: string): string {
@@ -98,7 +96,7 @@ export function buildChecklist(input: ChecklistInput): TodoItem[] {
   if (input.job !== null && input.job.status === 'running') {
     items.push({
       key: 'job',
-      text: `Дождитесь конца генерации — готово ${input.job.done} из ${input.job.total}`,
+      text: `Дождитесь конца генерации — готово ${input.job.done} из ${input.job.total} клеток`,
       target: 'ai-progress',
     })
     return items
@@ -150,19 +148,36 @@ export function buildChecklist(input: ChecklistInput): TodoItem[] {
     return items
   }
 
+  // Клетки, которые ИИ не составил (не справился или сервер перезапустили) и
+  // учитель не заполнил сам: один пункт на все, а не по строке на задание.
+  const isMissing = (variant: VariantDraft, skillIndex: number) =>
+    cellMissing(variant.aiCells?.[skillIndex]) &&
+    variant.tasks
+      .filter((task) => task.skillIndex === skillIndex)
+      .some((task) => taskProblem(task) !== null)
+  const missingCount = variants.reduce(
+    (sum, variant) =>
+      sum + skills.filter((_, position) => isMissing(variant, position + 1)).length,
+    0,
+  )
+  if (missingCount > 0) {
+    items.push({
+      key: 'missing',
+      text:
+        `Не ${plural(missingCount, 'составлена', 'составлены', 'составлено')} ${missingCount} ` +
+        `${plural(missingCount, 'клетка', 'клетки', 'клеток')} таблицы — ` +
+        'нажмите «Догенерировать недостающее» или заполните вручную',
+      target: input.aiEnabled ? RESUME_ID : 'tasks-section',
+    })
+  }
+
   const taskItems: TodoItem[] = []
   for (const variant of [...variants].sort((a, b) => a.variantNo - b.variantNo)) {
-    if (variant.aiStatus === 'failed') {
-      items.push({
-        key: `failed-${variant.variantNo}`,
-        text: `Вариант ${variant.variantNo} не составился — нажмите «повторить» в таблице`,
-        target: retryId(variant.variantNo),
-      })
-      continue
-    }
-
     skills.forEach((skill, position) => {
       const skillIndex = position + 1
+      if (isMissing(variant, skillIndex)) {
+        return
+      }
       const own = variant.tasks.filter((task) => task.skillIndex === skillIndex)
       own.forEach((task, order) => {
         const problem = taskProblem(task)

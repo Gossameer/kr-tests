@@ -21,7 +21,7 @@ import {
   createTest,
   fetchAiJob,
   fetchAiStatus,
-  retryAiVariant,
+  resumeAiJob,
   startAiJob,
   startAiTaskJob,
 } from '../api'
@@ -40,7 +40,7 @@ import {
 } from '../lib/aiJob'
 import type { TaskPlace } from '../lib/aiJob'
 import { buildTestPrompt } from '../lib/aiPrompt'
-import { buildChecklist, goToItem } from '../lib/checklist'
+import { RESUME_ID, buildChecklist, goToItem, plural } from '../lib/checklist'
 import { usePageTitle } from '../lib/usePageTitle'
 import { emptyTask, parseTestJson, validateTest } from '../lib/parseTestJson'
 import type { AiJob, AiStatus, CreatedTest, SkillDraft, VariantDraft } from '../types'
@@ -117,6 +117,7 @@ export default function CreateTestPage() {
   const [pollNonce, setPollNonce] = useState(0)
   const [genError, setGenError] = useState('')
   const [starting, setStarting] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const [showManual, setShowManual] = useState(false)
 
   // --- Задания ---
@@ -300,19 +301,27 @@ export default function CreateTestPage() {
     }
   }
 
-  async function handleRetryVariant(variantNo: number) {
+  /**
+   * «Догенерировать недостающее»: сервер заново составит только те клетки,
+   * которых нет (не удались или прерваны перезапуском). Готовые задания и
+   * правки учителя в них остаются как есть.
+   */
+  async function handleResume() {
     if (jobId === null) {
       return
     }
-    await retryAiVariant(jobId, variantNo)
-    setVariants((previous) =>
-      previous.map((variant) =>
-        variant.variantNo === variantNo
-          ? { ...variant, aiStatus: 'pending', aiError: '' }
-          : variant,
-      ),
-    )
-    setPollNonce((value) => value + 1)
+    setResuming(true)
+    setGenError('')
+    try {
+      await resumeAiJob(jobId)
+      setPollNonce((value) => value + 1)
+    } catch (error: unknown) {
+      setGenError(
+        error instanceof Error ? error.message : 'Не удалось продолжить генерацию',
+      )
+    } finally {
+      setResuming(false)
+    }
   }
 
   /** Перегенерирует одно задание: то же умение и формат, остальное не трогает. */
@@ -504,6 +513,8 @@ export default function CreateTestPage() {
   const skillsReady = skills.length > 0 && skills.every((skill) => skill.title.trim() !== '')
   const tableBlank = variants.length === 0 || isBlank(variants)
   const generationDone = job !== null && job.kind === 'test' && job.status !== 'running'
+  // Сколько клеток сервер не составил: не справился ИИ или прервал перезапуск.
+  const missingCells = job !== null ? job.failed + job.interrupted_cells : 0
 
   const studentUrl = created ? `${window.location.origin}/t/${created.code}` : ''
   const resultsUrl = created ? `/tests/${created.id}/results` : ''
@@ -795,18 +806,40 @@ export default function CreateTestPage() {
                 </div>
                 <p className="progress__text">
                   {job.status === 'running'
-                    ? `Готово ${job.done} из ${job.total} вариантов`
-                    : `Генерация закончена: готово ${job.ok} из ${job.total} вариантов`}
+                    ? `Готово ${job.done} из ${job.total} клеток таблицы`
+                    : `Генерация закончена: готово ${job.done} из ${job.total} клеток`}
+                  {job.status === 'running' && job.generating > 0 && ` · составляется: ${job.generating}`}
+                  {job.status === 'running' && job.checking > 0 && ` · проверяется: ${job.checking}`}
                   {job.failed > 0 && ` · не удалось: ${job.failed}`}
-                  {job.status === 'running' &&
-                    job.variants.some((variant) => variant.stage === 'check') &&
-                    ' · ИИ перепроверяет ответы'}
                 </p>
                 {job.status === 'running' && (
                   <p className="hint">
-                    Можно уйти со страницы — генерация продолжится на сервере, а результат
-                    появится здесь. Ничего не публикуется без вас.
+                    Задания появляются в таблице ниже по мере готовности. Можно уйти со
+                    страницы — генерация продолжится на сервере. Ничего не публикуется без вас.
                   </p>
+                )}
+                {job.status !== 'running' && job.interrupted && (
+                  <p className="field-error" id="ai-interrupted">
+                    Генерация прервалась: сервер перезапускали. Готовые задания сохранены.
+                  </p>
+                )}
+                {job.status !== 'running' && missingCells > 0 && (
+                  <div className="row row--tight">
+                    <button
+                      id={RESUME_ID}
+                      type="button"
+                      className="btn btn--primary"
+                      onClick={() => void handleResume()}
+                      disabled={resuming}
+                    >
+                      {resuming ? 'Запускаем…' : 'Догенерировать недостающее'}
+                    </button>
+                    <span className="hint">
+                      Не {plural(missingCells, 'составлена', 'составлены', 'составлено')}{' '}
+                      {missingCells} {plural(missingCells, 'клетка', 'клетки', 'клеток')}. Готовое
+                      не изменится.
+                    </span>
+                  </div>
                 )}
                 {job.error !== '' && <p className="field-error">{job.error}</p>}
               </div>
@@ -876,7 +909,7 @@ export default function CreateTestPage() {
       {variants.length > 0 && skills.length > 0 && (
         <section className="card" id="tasks-section" tabIndex={-1}>
           <h2>4. Проверка заданий</h2>
-          {(generationDone || aiLoaded !== '') && !tableBlank ? (
+          {(generationDone || aiLoaded !== '') && !tableBlank && missingCells === 0 ? (
             <p className="nexthint">Проверьте задания и нажмите «Опубликовать».</p>
           ) : (
             <p className="muted">
@@ -891,7 +924,6 @@ export default function CreateTestPage() {
             onChange={setVariants}
             aiEnabled={aiEnabled}
             onRegenerate={handleRegenerate}
-            onRetryVariant={jobId !== null ? handleRetryVariant : undefined}
             showErrors={submitted}
           />
         </section>

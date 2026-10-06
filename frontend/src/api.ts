@@ -395,12 +395,12 @@ export async function fetchAiJob(jobId: number): Promise<AiJob> {
   return parse<AiJob>(await request(`${API_URL}/api/ai/jobs/${jobId}`))
 }
 
-/** POST /api/ai/jobs/{id}/variants/{no}/retry — повторить неудавшийся вариант. */
-export async function retryAiVariant(jobId: number, variantNo: number): Promise<void> {
-  const response = await request(
-    `${API_URL}/api/ai/jobs/${jobId}/variants/${variantNo}/retry`,
-    { method: 'POST' },
-  )
+/**
+ * POST /api/ai/jobs/{id}/resume — догенерировать недостающее: клетки, которые
+ * не удались или прерваны перезапуском сервера. Готовые задания не трогаются.
+ */
+export async function resumeAiJob(jobId: number): Promise<void> {
+  const response = await request(`${API_URL}/api/ai/jobs/${jobId}/resume`, { method: 'POST' })
   if (!response.ok) {
     throw new Error(await extractError(response))
   }

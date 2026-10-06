@@ -18,6 +18,16 @@ type Props = {
   showErrors?: boolean
 }
 
+/**
+ * Умение про ударение? У таких заданий верный ответ отличается от неверного
+ * только тем, какая буква заглавная («звОнит» / «звонИт»), а проверка ввода
+ * регистр не учитывает — засчитается любое ударение. Проверить можно только выбором.
+ * То же правило — на сервере (STRESS_RE в ai_generation.py).
+ */
+function isStressSkill(title: string): boolean {
+  return /ударен|орфоэп/i.test(title)
+}
+
 /** Заготовка нового умения: одно задание, ввод ответа. */
 function emptySkill(): SkillDraft {
   return { title: '', tasksPerVariant: 1, answerFormat: 'input' }
@@ -169,6 +179,22 @@ export default function SkillEditor({ skills, onChange, showErrors = false }: Pr
                 <p className="hint">
                   При вводе ответа ученик не угадывает из четырёх — проверка честнее.
                 </p>
+                {isStressSkill(skill.title) && skill.answerFormat === 'input' && (
+                  <div className="skillwarn" id={`skill-stress-${index}`}>
+                    <p>
+                      Такое задание проверяется только выбором: при вводе регистр букв не
+                      учитывается, и засчитается любое ударение («звонит», «звОнит»,
+                      «звонИт»).
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn--small btn--primary"
+                      onClick={() => update(index, { answerFormat: 'choice' })}
+                    >
+                      Переключить на выбор
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </li>

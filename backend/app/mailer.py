@@ -15,6 +15,7 @@
 Пароль SMTP не попадает ни в лог, ни в журнал, ни в тексты ошибок.
 """
 
+import base64
 import html
 import logging
 import queue
@@ -24,6 +25,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 
@@ -35,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 # Не чаще одного письма в секунду — лимиты почтовых сервисов.
 SEND_INTERVAL = 1.0
-SMTP_TIMEOUT = 20
 MAX_ERROR_LEN = 300
 
 SERVICE_NAME = "Проверочные работы"
@@ -148,7 +149,10 @@ def compose(
 
 def build_message(to_name: str, to_email: str, subject: str, text: str, body_html: str) -> EmailMessage:
     settings = get_settings()
-    message = EmailMessage()
+    # policy.SMTP: переводы строк и длина строк — как требует почтовый протокол,
+    # а кириллица в заголовках (тема, имя отправителя и получателя) кодируется
+    # по RFC 2047 — на провод уходит только ASCII, это понимает любой сервер.
+    message = EmailMessage(policy=policy.SMTP)
     message["Subject"] = subject
     # В тестовом режиме отправителя может не быть — подставляем заглушку,
     # письмо всё равно никуда не уйдёт.
@@ -157,8 +161,10 @@ def build_message(to_name: str, to_email: str, subject: str, text: str, body_htm
     message["To"] = formataddr((to_name, to_email))
     message["Date"] = formatdate(localtime=True)
     message["Message-ID"] = make_msgid(domain=sender.rsplit("@", 1)[-1] or "localhost")
-    message.set_content(text)
-    message.add_alternative(body_html, subtype="html")
+    # Тело — UTF-8 в base64: читается везде и не зависит от того, умеет ли
+    # сервер принимать 8-битный текст.
+    message.set_content(text, charset="utf-8", cte="base64")
+    message.add_alternative(body_html, subtype="html", charset="utf-8", cte="base64")
     return message
 
 
@@ -243,18 +249,60 @@ def _set_status(log_id: int, status: str, error: str = "") -> None:
         logger.warning("Не удалось обновить журнал писем (запись %s)", log_id, exc_info=True)
 
 
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _login(client: smtplib.SMTP, user: str, password: str) -> None:
+    """
+    Вход на почтовый сервер.
+
+    smtplib.login кодирует логин и пароль в ASCII и на любой не-латинской букве
+    падает с UnicodeEncodeError — ещё до обращения к серверу. Сам протокол
+    (RFC 4616) передаёт их в UTF-8, поэтому такой пароль отправляем сами:
+    base64 от UTF-8. Обычные латинские логин и пароль идут штатным путём.
+    """
+    if user.isascii() and password.isascii():
+        client.login(user, password)
+        return
+
+    client.ehlo_or_helo_if_needed()
+    methods = client.esmtp_features.get("auth", "").upper().split()
+    if "PLAIN" in methods:
+        code, response = client.docmd("AUTH", "PLAIN " + _b64(f"\0{user}\0{password}"))
+    elif "LOGIN" in methods:
+        code, response = client.docmd("AUTH", "LOGIN " + _b64(user))
+        if code == 334:
+            code, response = client.docmd(_b64(password))
+    else:
+        raise smtplib.SMTPNotSupportedError(
+            "почтовый сервер не предлагает вход по паролю (AUTH PLAIN / LOGIN)"
+        )
+    if code not in (235, 503):
+        raise smtplib.SMTPAuthenticationError(code, response)
+
+
 def _send(message: EmailMessage) -> None:
     """Одно письмо через SMTP. Бросает исключение, если не ушло."""
     settings = get_settings()
     host = settings.smtp_host.strip()
     user = settings.smtp_user.strip()
+    # Таймаут действует на каждый шаг: соединение, приветствие, вход, отправку.
+    timeout = settings.smtp_timeout_seconds
+    # Имя для EHLO задаём сами и только латиницей: иначе Python возьмёт имя
+    # компьютера, и кириллическое («Учительская-ПК») уронит соединение.
+    ehlo_name = settings.smtp_ehlo_name
 
     if settings.smtp_ssl:
         client: smtplib.SMTP = smtplib.SMTP_SSL(
-            host, settings.smtp_port, timeout=SMTP_TIMEOUT, context=ssl.create_default_context()
+            host,
+            settings.smtp_port,
+            local_hostname=ehlo_name,
+            timeout=timeout,
+            context=ssl.create_default_context(),
         )
     else:
-        client = smtplib.SMTP(host, settings.smtp_port, timeout=SMTP_TIMEOUT)
+        client = smtplib.SMTP(host, settings.smtp_port, local_hostname=ehlo_name, timeout=timeout)
 
     with client:
         encrypted = settings.smtp_ssl
@@ -271,21 +319,34 @@ def _send(message: EmailMessage) -> None:
                     "сервер почты не поддерживает шифрование — пароль по открытому "
                     "каналу не отправляем. Проверьте SMTP_PORT и SMTP_SSL"
                 )
-            client.login(user, settings.smtp_password)
+            _login(client, user, settings.smtp_password)
         client.send_message(message)
 
 
 def _describe(exc: Exception) -> str:
     """Причина сбоя для журнала — по-человечески и без секретов."""
+    timeout = get_settings().smtp_timeout_seconds
     if isinstance(exc, smtplib.SMTPAuthenticationError):
         return "почтовый сервер не принял логин или пароль (SMTP_USER / SMTP_PASSWORD)"
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
         return "почтовый сервер не принял адрес получателя"
     if isinstance(exc, smtplib.SMTPSenderRefused):
         return "почтовый сервер не принял адрес отправителя (SMTP_FROM)"
-    if isinstance(exc, (TimeoutError, ConnectionError, OSError)) and not isinstance(
-        exc, smtplib.SMTPException
-    ):
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+        return (
+            f"почтовый сервер не ответил за {timeout:g} с (таймаут) — "
+            "проверьте SMTP_HOST, SMTP_PORT и SMTP_SSL"
+        )
+    if isinstance(exc, UnicodeEncodeError):
+        # Сюда попадать уже не должны; если попали — в настройках остался символ,
+        # который почтовый протокол не передаёт. Сам символ в журнал не пишем.
+        return (
+            "в настройках почты есть не-латинский символ, который нельзя передать "
+            "серверу — проверьте SMTP_USER и SMTP_FROM"
+        )
+    if isinstance(exc, ssl.SSLError):
+        return f"не удалось установить защищённое соединение ({type(exc).__name__}) — проверьте SMTP_PORT и SMTP_SSL"
+    if isinstance(exc, (ConnectionError, OSError)) and not isinstance(exc, smtplib.SMTPException):
         return f"нет связи с почтовым сервером ({type(exc).__name__})"
     return f"{type(exc).__name__}: {exc}"
 

@@ -72,6 +72,18 @@ class Settings(BaseSettings):
     ai_gen_max_tokens: int = 4000
     ai_check_max_tokens: int = 1500
     ai_timeout_seconds: float = 120
+    # Паузы (в секундах) перед повторами временных сбоев: обрыв связи, таймаут,
+    # 429 и 5xx. Сколько чисел — столько повторов. Для генерации и самопроверки.
+    ai_retry_pauses: str = "2,5,10"
+    # Сколько запросов к ИИ одновременно (генерация и самопроверка вместе,
+    # на весь сервер). Больше — быстрее, но провайдер может начать отвечать 429.
+    ai_max_concurrency: int = 6
+    # Размышления модели при генерации: off — не размышлять (быстрее и дешевле,
+    # для школьных заданий хватает), on — как решит провайдер.
+    ai_gen_thinking: str = "off"
+    # Сколько вариантов одного умения просить в одном запросе. Больше — меньше
+    # запросов, но длиннее ответ (ограничен AI_GEN_MAX_TOKENS) и дольше ожидание.
+    ai_gen_chunk_variants: int = 4
 
     # --- Почта: приглашения учителям и сброс пароля ---
     #
@@ -88,6 +100,13 @@ class Settings(BaseSettings):
     # true — шифрование с первой секунды (порт 465). false — обычное соединение
     # с переходом на шифрование командой STARTTLS (порт 587).
     smtp_ssl: bool = True
+    # Как сервис представляется почтовому серверу (команда EHLO). Только латиница:
+    # по умолчанию Python подставил бы имя компьютера, а оно бывает кириллическим
+    # («Учительская-ПК») — и соединение падает ещё до отправки письма.
+    smtp_local_hostname: str = "localhost"
+    # Сколько секунд ждать почтовый сервер на каждом шаге (соединение, вход,
+    # отправка). Дольше — письмо получает статус «не ушло» с причиной.
+    smtp_timeout_seconds: float = 30
     # Адрес сайта, как его видит учитель: из него собираются ссылки в письмах.
     public_base_url: str = "http://127.0.0.1:5174"
 
@@ -112,6 +131,14 @@ class Settings(BaseSettings):
         return bool(self.smtp_host.strip())
 
     @property
+    def smtp_ehlo_name(self) -> str:
+        """Имя для EHLO: из настройки, если оно годится, иначе localhost."""
+        name = self.smtp_local_hostname.strip()
+        if name and name.isascii() and not any(char.isspace() for char in name):
+            return name
+        return "localhost"
+
+    @property
     def mail_from(self) -> str:
         return self.smtp_from.strip() or self.smtp_user.strip()
 
@@ -119,6 +146,10 @@ class Settings(BaseSettings):
     def ai_enabled(self) -> bool:
         """Настроена ли встроенная генерация: без ключа запросы делать нечем."""
         return bool(self.ai_api_key.strip())
+
+    @property
+    def ai_gen_thinking_off(self) -> bool:
+        return self.ai_gen_thinking.strip().lower() not in ("on", "true", "1", "yes")
 
     @property
     def ai_check_model_name(self) -> str:

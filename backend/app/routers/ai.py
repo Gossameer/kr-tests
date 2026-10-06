@@ -4,7 +4,8 @@
     GET  /api/ai/status                              — включена ли генерация, лимит на сегодня
     POST /api/ai/jobs                                — запустить генерацию проверочной работы
     GET  /api/ai/jobs/{id}                           — прогресс и результат
-    POST /api/ai/jobs/{id}/variants/{no}/retry       — повторить неудавшийся вариант
+    POST /api/ai/jobs/{id}/resume                    — догенерировать недостающее
+    POST /api/ai/jobs/{id}/variants/{no}/retry       — то же, но для одного варианта
     POST /api/ai/task-jobs                           — перегенерировать одно задание
 
     GET  /api/admin/ai                               — расход и лимит (администратор)
@@ -248,7 +249,9 @@ def create_job(payload: JobCreate, user: dict = Depends(require_user)) -> dict:
                         request_dict(payload, variants_count=payload.variants_count)
                     ),
                     Jsonb(
-                        {"variants": ai_generation.initial_variants(payload.variants_count)}
+                        ai_generation.initial_result(
+                            payload.variants_count, len(payload.skills)
+                        )
                     ),
                 ),
             ).fetchone()
@@ -263,53 +266,77 @@ def create_job(payload: JobCreate, user: dict = Depends(require_user)) -> dict:
         len(payload.skills),
         payload.variants_count,
     )
-    ai_generation.start_test_job(job_id, user["id"], list(range(1, payload.variants_count + 1)))
+    ai_generation.start_test_job(job_id, user["id"])
     return {"job_id": job_id}
 
 
 @router.get("/jobs/{job_id}", summary="Прогресс и результат генерации")
 def get_job(job_id: int = Path(ge=1), user: dict = Depends(require_user)) -> dict:
-    return ai_generation.job_view(own_job(job_id, user))
+    row = own_job(job_id, user)
+    # Задание числится «идёт», но его давно никто не выполняет (сервер
+    # перезапустили) — закрываем его как прерванное, чтобы клетки не висели
+    # «составляется» вечно, и отдаём уже честное состояние.
+    if ai_generation.orphaned(row):
+        logger.info("Генерация %s осиротела — помечаем прерванной", job_id)
+        ai_generation.mark_interrupted(job_id)
+        row = own_job(job_id, user)
+    return ai_generation.job_view(row)
+
+
+class ResumeIn(BaseModel):
+    # Пусто — догенерировать всё недостающее; номер — только один вариант.
+    variant_no: int | None = Field(default=None, ge=1, le=MAX_VARIANTS)
+
+
+def _resume(job_id: int, user: dict, variant_no: int | None) -> dict:
+    if not get_settings().ai_enabled:
+        raise ai_not_configured()
+
+    row = own_job(job_id, user)
+    if row["kind"] != "test":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Генерация не найдена.")
+    if ai_generation.orphaned(row):
+        ai_generation.mark_interrupted(job_id)
+
+    count, problem = ai_generation.prepare_resume(job_id, variant_no)
+    if problem:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=problem)
+
+    logger.info(
+        "Учитель %s догенерирует генерацию %s: клеток %s%s",
+        user["email"],
+        job_id,
+        count,
+        f", вариант {variant_no}" if variant_no else "",
+    )
+    ai_generation.start_test_job(job_id, user["id"])
+    return {"job_id": job_id, "cells": count}
+
+
+@router.post("/jobs/{job_id}/resume", summary="Догенерировать недостающее")
+def resume_job(
+    payload: ResumeIn | None = None,
+    job_id: int = Path(ge=1),
+    user: dict = Depends(require_user),
+) -> dict:
+    """
+    Заново составляет только те клетки, которых нет: не удались или прерваны
+    перезапуском сервера. Готовые задания (и правки учителя в них) не трогаем.
+    В дневной лимит не входит: это доводка уже запущенной генерации.
+    """
+    return _resume(job_id, user, payload.variant_no if payload else None)
 
 
 @router.post(
     "/jobs/{job_id}/variants/{variant_no}/retry",
-    summary="Повторить неудавшийся вариант",
+    summary="Догенерировать недостающее в одном варианте",
 )
 def retry_variant(
     job_id: int = Path(ge=1),
     variant_no: int = Path(ge=1, le=MAX_VARIANTS),
     user: dict = Depends(require_user),
 ) -> dict:
-    if not get_settings().ai_enabled:
-        raise ai_not_configured()
-
-    row = own_job(job_id, user)
-    variants = (row["result"] or {}).get("variants", [])
-    if row["kind"] != "test" or variant_no > len(variants):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Нет такого варианта.")
-
-    problem = ""
-
-    def change(job: dict) -> None:
-        nonlocal problem
-        variant = job["result"]["variants"][variant_no - 1]
-        if variant["status"] != "failed":
-            problem = "Повторить можно только вариант, который не удался."
-            return
-        variant.update(status="pending", stage="", error="", attempts=0, tasks=[])
-        # Задание оживает: если оно упало целиком (например, кончились деньги,
-        # а админ пополнил счёт), общую ошибку снимаем.
-        job["status"] = "running"
-        job["error"] = ""
-
-    job = ai_generation.update_job(job_id, change)
-    if problem:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=problem)
-
-    logger.info("Учитель %s повторяет вариант %s генерации %s", user["email"], variant_no, job_id)
-    ai_generation.start_test_job(job_id, user["id"], [variant_no])
-    return {"job_id": job["id"]}
+    return _resume(job_id, user, variant_no)
 
 
 @router.post(

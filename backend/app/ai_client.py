@@ -4,7 +4,7 @@
     POST {AI_API_BASE_URL}/chat/completions
     Authorization: Bearer {AI_API_KEY}
 
-Почему стандартный urllib, а не httpx/openai: запрос ровно один и простой,
+Почему стандартный http.client, а не httpx/openai: запрос ровно один и простой,
 а лишняя зависимость — лишнее, что надо ставить и обновлять на сервере.
 
 Правила, которые тут зашиты:
@@ -18,11 +18,11 @@
 import http.client
 import json
 import logging
-import socket
+import ssl
 import threading
-import urllib.error
-import urllib.request
+import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from app import db
 from app.config import get_settings
@@ -39,6 +39,15 @@ MAX_ERROR_LEN = 300
 _no_reasoning_models: set[str] = set()
 # Модели, которые принимают лимит только как max_completion_tokens.
 _completion_tokens_models: set[str] = set()
+# Модели, которые отвергли «reasoning: {effort: none}» (отключение размышлений).
+_no_thinking_off_models: set[str] = set()
+
+# Как AITUNNEL отключает размышления модели (единый параметр для всех моделей,
+# см. https://aitunnel.ru/docs/reasoning). У qwen3.7-plus размышления по умолчанию
+# включены: модель сначала «думает» сотни токенов и только потом пишет ответ.
+THINKING_OFF = {"effort": "none"}
+
+KIND_NAMES = {"generate": "генерация", "check": "самопроверка"}
 _no_reasoning_lock = threading.Lock()
 
 
@@ -46,22 +55,50 @@ class AIError(Exception):
     """
     Ошибка обращения к ИИ.
 
-    message — текст для учителя, без технических подробностей и без ключа.
-    fatal   — повторять бессмысленно (ключ не принят, нет денег, нет модели):
-              генерацию надо остановить целиком, а не мучить каждый вариант.
+    message   — текст для учителя, без технических подробностей и без ключа;
+    fatal     — повторять бессмысленно (ключ не принят, нет денег, нет модели):
+                генерацию надо остановить целиком, а не мучить каждый вариант;
+    retryable — временный сбой (обрыв связи, таймаут, 429, 5xx): запрос стоит
+                повторить после паузы;
+    short     — причина в двух-трёх словах, для подписи в таблице заданий
+                («нет связи с ИИ-сервисом»);
+    reason    — подробность для журнала и лога («обрыв при установке соединения:
+                SSLEOFError за 5.0 с»). Ключа и текста запроса в ней нет.
     """
 
-    def __init__(self, message: str, *, fatal: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        fatal: bool = False,
+        retryable: bool = False,
+        short: str = "",
+        reason: str = "",
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.fatal = fatal
+        self.retryable = retryable
+        self.short = short or message
+        self.reason = reason or message
+        # Сервер попросил подождать столько секунд (заголовок Retry-After при 429).
+        self.retry_after: float | None = None
+        # Все повторы исчерпаны — выше по коду повторять тот же запрос незачем.
+        self.exhausted = False
+        # Ответ оборван по лимиту токенов (обычно всё ушло в размышления).
+        self.truncated = False
 
 
 class AIUnavailable(AIError):
     """Сервис не ответил: таймаут, обрыв, соединение не установилось."""
 
-    def __init__(self) -> None:
-        super().__init__("ИИ-сервис недоступен. Попробуйте позже.")
+    def __init__(self, reason: str = "") -> None:
+        super().__init__(
+            "ИИ-сервис недоступен. Попробуйте позже.",
+            retryable=True,
+            short="нет связи с ИИ-сервисом",
+            reason=reason or "ИИ-сервис недоступен",
+        )
 
 
 @dataclass
@@ -70,6 +107,10 @@ class ChatResult:
     prompt_tokens: int
     completion_tokens: int
     finish_reason: str
+    # Сколько секунд занял запрос (вместе с повторами без отвергнутых параметров).
+    seconds: float = 0.0
+    # Из них токены размышлений — по ним видно, отключились ли размышления.
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -156,42 +197,169 @@ def _error_for_status(status_code: int, provider_text: str) -> AIError:
             fatal=True,
         )
     if status_code == 429:
-        return AIError("ИИ-сервис перегружен запросами. Попробуйте чуть позже.")
+        return AIError(
+            "ИИ-сервис перегружен запросами. Попробуйте чуть позже.",
+            retryable=True,
+            short="ИИ-сервис перегружен запросами",
+            reason=f"429 — слишком много запросов: {provider_text}",
+        )
     if status_code >= 500:
-        return AIError(f"ИИ-сервис ответил ошибкой {status_code}. Попробуйте позже.")
+        return AIError(
+            f"ИИ-сервис ответил ошибкой {status_code}. Попробуйте позже.",
+            retryable=True,
+            short=f"ошибка ИИ-сервиса ({status_code})",
+            reason=f"ошибка сервера {status_code}: {provider_text}",
+        )
     # 400/404/422: модель не найдена, неверный параметр и т. п. — повтор не поможет.
     return AIError(f"ИИ-сервис отклонил запрос: {provider_text}", fatal=True)
 
 
+# ---------------------------------------------------------------------
+# Соединения
+#
+# Соединение с ИИ-сервисом держим открытым и используем повторно. Причина не
+# в скорости: на практике НОВОЕ соединение с api.aitunnel.ru обрывается ещё на
+# рукопожатии примерно в половине случаев (SSL: UNEXPECTED_EOF, через 5 секунд),
+# а уже установленное работает без сбоев. Пока клиент открывал соединение на
+# каждый запрос, половина запросов падала «сервис недоступен».
+# ---------------------------------------------------------------------
+
+# Сколько секунд ждать установки соединения (TCP + TLS). Ответа модели ждём
+# дольше — AI_TIMEOUT_SECONDS.
+CONNECT_TIMEOUT = 15
+
+# Сбой на соединении, взятом из запаса: сервер мог закрыть его, пока оно лежало.
+# Это не ошибка сервиса — молча повторяем на свежем соединении.
+_STALE_ERRORS = (
+    http.client.RemoteDisconnected,
+    http.client.CannotSendRequest,
+    http.client.ResponseNotReady,
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    ssl.SSLEOFError,
+    ssl.SSLZeroReturnError,
+)
+
+
+class _Pool:
+    """Запас открытых соединений с одним адресом. Одно соединение — один поток за раз."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._key: tuple | None = None
+        self._idle: list[http.client.HTTPConnection] = []
+        self._context = ssl.create_default_context()
+
+    def take(self, scheme: str, host: str, port: int) -> tuple[http.client.HTTPConnection, bool]:
+        """Возвращает (соединение, было ли оно уже открыто)."""
+        key = (scheme, host, port)
+        with self._lock:
+            if key != self._key:
+                # Адрес сменили (другой AI_API_BASE_URL) — старые соединения не нужны.
+                stale, self._idle, self._key = self._idle, [], key
+            else:
+                stale = []
+                if self._idle:
+                    return self._idle.pop(), True
+        for connection in stale:
+            connection.close()
+
+        if scheme == "https":
+            return (
+                http.client.HTTPSConnection(
+                    host, port, timeout=CONNECT_TIMEOUT, context=self._context
+                ),
+                False,
+            )
+        return http.client.HTTPConnection(host, port, timeout=CONNECT_TIMEOUT), False
+
+    def give_back(self, connection: http.client.HTTPConnection) -> None:
+        with self._lock:
+            if len(self._idle) < 16:
+                self._idle.append(connection)
+                return
+        connection.close()
+
+
+_pool = _Pool()
+
+
+def _one_request(payload: dict) -> tuple[int, bytes, str]:
+    """
+    Один HTTP-запрос. Возвращает (код ответа, тело, Retry-After).
+    Сетевой сбой → AIUnavailable с причиной: на каком шаге и что случилось.
+    """
+    settings = get_settings()
+    base = urlsplit(settings.ai_api_base_url.strip())
+    scheme = base.scheme or "https"
+    host = base.hostname or ""
+    port = base.port or (443 if scheme == "https" else 80)
+    path = base.path.rstrip("/") + "/chat/completions"
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {settings.ai_api_key.strip()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Connection": "keep-alive",
+    }
+    if not host or scheme not in ("http", "https"):
+        raise ValueError("нет адреса сервера или неизвестный протокол")
+
+    for fresh_attempt in (False, True):
+        connection, reused = _pool.take(scheme, host, port)
+        step = "при установке соединения"
+        started = time.monotonic()
+        try:
+            if connection.sock is None:
+                connection.connect()
+            # Соединение есть — дальше ждём уже ответ модели, это дольше.
+            connection.sock.settimeout(settings.ai_timeout_seconds)
+            step = "при отправке запроса"
+            connection.request("POST", path, body=body, headers=headers)
+            step = "при ожидании ответа"
+            response = connection.getresponse()
+            data = response.read()
+        except (UnicodeEncodeError, ValueError):
+            connection.close()
+            raise
+        except (OSError, http.client.HTTPException) as exc:
+            connection.close()
+            if reused and not fresh_attempt and isinstance(exc, _STALE_ERRORS):
+                # Сервер закрыл простаивавшее соединение — повторяем на новом.
+                continue
+            took = time.monotonic() - started
+            if isinstance(exc, TimeoutError):
+                what = f"таймаут {step} ({took:.0f} с)"
+            else:
+                what = f"обрыв {step}: {type(exc).__name__} за {took:.1f} с"
+            raise AIUnavailable(what) from None
+
+        if response.will_close:
+            connection.close()
+        else:
+            _pool.give_back(connection)
+        return response.status, data, response.headers.get("Retry-After", "")
+
+    raise AIUnavailable("обрыв соединения")  # сюда не доходим: второй проход всегда выходит сам
+
+
 def _post(payload: dict) -> dict:
     """
-    Один HTTP-запрос. Возвращает разобранный JSON или бросает AIError.
+    Один запрос к /chat/completions. Возвращает разобранный JSON или бросает AIError.
 
-    Сетевые сбои без ответа (таймаут, обрыв, отказ в соединении) → AIUnavailable
-    и подсказка про зеркало в логе. Ключ в лог не пишем: только адрес и модель.
+    Сетевые сбои без ответа (таймаут, обрыв, отказ в соединении) → AIUnavailable.
+    Ключ в лог не пишем: только адрес и модель.
     """
     settings = get_settings()
     base_url = settings.ai_api_base_url.rstrip("/")
-    url = f"{base_url}/chat/completions"
-
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {settings.ai_api_key.strip()}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
 
     try:
-        with urllib.request.urlopen(request, timeout=settings.ai_timeout_seconds) as response:
-            body = response.read()
+        status_code, body, retry_after = _one_request(payload)
     except (UnicodeEncodeError, ValueError) as exc:
         # Сюда попадают ошибки ДО отправки: http.client не пропускает в заголовке
         # перевод строки и не-латинские символы (частая беда скопированного ключа),
-        # а urllib — кривой адрес. Сам ключ в лог не пишем, только признаки.
+        # а разбор адреса — кривой AI_API_BASE_URL. Сам ключ в лог не пишем.
         if isinstance(exc, UnicodeEncodeError) or "header" in str(exc).lower():
             key = settings.ai_api_key.strip()
             logger.error(
@@ -210,61 +378,93 @@ def _post(payload: dict) -> dict:
             "Адрес ИИ-сервиса на сервере указан неверно. Сообщите администратору.",
             fatal=True,
         ) from None
-    except urllib.error.HTTPError as exc:
-        body = exc.read() if exc.fp is not None else b""
+
+    if status_code >= 400:
         provider_text = _provider_message(body)
         if provider_text is None:
             # Ответ без JSON: это не сам сервис, а прокси/балансировщик по пути.
-            logger.warning(
-                "ИИ-сервис %s вернул %s без JSON. Если повторяется — попробуйте "
-                "зеркало AI_API_BASE_URL=%s",
-                base_url,
-                exc.code,
-                MIRROR_HINT,
-            )
-            raise AIUnavailable() from None
-        logger.warning(
-            "ИИ-сервис вернул ошибку %s (модель %s): %s",
-            exc.code,
-            payload.get("model"),
-            provider_text,
-        )
-        error = _error_for_status(exc.code, provider_text)
-        error.status_code = exc.code  # type: ignore[attr-defined]
+            raise AIUnavailable(f"ответ {status_code} без JSON (отвечал не сам сервис)")
+        error = _error_for_status(status_code, provider_text)
+        error.status_code = status_code  # type: ignore[attr-defined]
         error.provider_text = provider_text  # type: ignore[attr-defined]
-        raise error from None
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        socket.timeout,
-        ConnectionError,
-        http.client.HTTPException,
-        OSError,
-    ) as exc:
-        reason = getattr(exc, "reason", exc)
-        logger.warning(
-            "ИИ-сервис %s недоступен (%s: %s). Если так продолжается — попробуйте "
-            "зеркало: AI_API_BASE_URL=%s",
-            base_url,
-            type(exc).__name__,
-            reason,
-            MIRROR_HINT,
-        )
-        raise AIUnavailable() from None
+        if retry_after.strip().isdigit():
+            error.retry_after = float(retry_after.strip())
+        raise error
 
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))
     except ValueError:
-        logger.warning(
-            "ИИ-сервис %s ответил не JSON. Если повторяется — попробуйте зеркало %s",
-            base_url,
-            MIRROR_HINT,
-        )
-        raise AIUnavailable() from None
+        raise AIUnavailable("ответ 200, но не JSON") from None
 
     if not isinstance(data, dict):
-        raise AIError("ИИ-сервис вернул ответ непонятного вида.")
+        raise AIError("ИИ-сервис вернул ответ непонятного вида.", short="непонятный ответ ИИ")
     return data
+
+
+def retry_pauses() -> list[float]:
+    """Паузы перед повторами временных сбоев: «2,5,10» → [2, 5, 10]."""
+    pauses: list[float] = []
+    for part in get_settings().ai_retry_pauses.split(","):
+        try:
+            pauses.append(max(0.0, float(part)))
+        except ValueError:
+            continue
+    return pauses
+
+
+def _post_with_retries(
+    payload: dict, ctx: "RequestContext", *, model: str, kind: str, label: str
+) -> dict:
+    """
+    Запрос с повторами ВРЕМЕННЫХ сбоев: обрыв связи, таймаут, 429, 5xx.
+
+    Такие сбои не говорят ничего плохого ни о запросе, ни об ответе модели —
+    через несколько секунд тот же запрос обычно проходит. Поэтому повторяем
+    его здесь, одинаково для генерации и самопроверки, с паузами
+    AI_RETRY_PAUSES (2, 5 и 10 секунд). Каждая неудачная попытка пишется
+    в журнал запросов с настоящей причиной.
+    """
+    pauses = retry_pauses()
+    what = KIND_NAMES.get(kind, kind)
+
+    for attempt in range(len(pauses) + 1):
+        try:
+            return _post(payload)
+        except AIError as error:
+            record_request(ctx, model=model, kind=kind, success=False, error=error.reason)
+            if not error.retryable:
+                raise
+            if attempt == len(pauses):
+                error.exhausted = True
+                logger.warning(
+                    "ИИ: %s · %s · %s: %s — повторы исчерпаны (%s). Если так постоянно — "
+                    "проверьте связь с %s (зеркало: %s)",
+                    what,
+                    model,
+                    label or "—",
+                    error.reason,
+                    len(pauses),
+                    get_settings().ai_api_base_url,
+                    MIRROR_HINT,
+                )
+                raise
+            # При 429 сервер может сам сказать, сколько ждать, — но не дольше 30 с.
+            pause = pauses[attempt]
+            if error.retry_after is not None:
+                pause = min(max(pause, error.retry_after), 30.0)
+            logger.warning(
+                "ИИ: %s · %s · %s: %s — повтор %s из %s через %g с",
+                what,
+                model,
+                label or "—",
+                error.reason,
+                attempt + 1,
+                len(pauses),
+                pause,
+            )
+            time.sleep(pause)
+
+    raise AIUnavailable()  # недостижимо: цикл всегда выходит через return или raise
 
 
 def _is_bad_request(error: AIError) -> bool:
@@ -282,11 +482,11 @@ def _wants_max_completion_tokens(error: AIError) -> bool:
 
 
 def _reasoning_rejected(error: AIError) -> bool:
-    """Похоже ли, что провайдеру не понравился именно параметр reasoning_effort."""
+    """Похоже ли, что провайдеру не понравился параметр размышлений."""
     # Провайдеры формулируют по-разному: «Unsupported parameter: 'reasoning_effort'»,
     # «unknown field», «invalid request». Поэтому текст почти не разбираем: любая
     # 400/422 на запрос с этим параметром — повод попробовать без него. Исключение —
-    # когда ошибка явно про max_tokens: тогда reasoning_effort ни при чём.
+    # когда ошибка явно про max_tokens: тогда параметры размышлений ни при чём.
     return _is_bad_request(error) and not _wants_max_completion_tokens(error)
 
 
@@ -298,18 +498,27 @@ def chat(
     messages: list[dict],
     max_tokens: int,
     reasoning_effort: str = "",
+    thinking: bool | None = None,
+    label: str = "",
     temperature: float | None = None,
 ) -> ChatResult:
     """
     Запрос к /chat/completions. Каждая попытка пишется в журнал отдельно.
 
-    kind — 'generate' или 'check', нужен только журналу.
+    kind      — 'generate' или 'check', нужен журналу и логу;
+    thinking  — False: попросить модель не размышлять (быстрее и дешевле),
+                None: не передавать ничего (как решит провайдер);
+    label     — что это за запрос («умение 2, варианты 1–4») — только для лога.
+
+    В лог пишется время КАЖДОГО запроса: модель, метка, секунды, токены.
+    По нему видно, где генерация тратит время.
     """
     with _no_reasoning_lock:
         limit_field = (
             "max_completion_tokens" if model in _completion_tokens_models else "max_tokens"
         )
         effort = "" if model in _no_reasoning_models else reasoning_effort.strip()
+        thinking_off = thinking is False and model not in _no_thinking_off_models
 
     # Лимит токенов уходит в КАЖДОМ запросе — меняется только имя поля.
     payload: dict = {"model": model, "messages": messages, limit_field: max_tokens}
@@ -317,14 +526,20 @@ def chat(
         payload["temperature"] = temperature
     if effort:
         payload["reasoning_effort"] = effort
+    if thinking_off:
+        payload["reasoning"] = dict(THINKING_OFF)
 
-    # Не больше двух исправлений запроса: имя поля лимита и reasoning_effort.
-    for _ in range(3):
+    started = time.monotonic()
+    what = KIND_NAMES.get(kind, kind)
+
+    # Не больше трёх исправлений запроса: имя поля лимита и два параметра размышлений.
+    for _ in range(4):
         try:
-            data = _post(payload)
+            data = _post_with_retries(payload, ctx, model=model, kind=kind, label=label)
             break
         except AIError as error:
-            record_request(ctx, model=model, kind=kind, success=False, error=error.message)
+            # Неудачные попытки уже записаны в журнал — здесь только решаем,
+            # можно ли починить сам запрос (убрать параметр, который не приняли).
 
             if "max_tokens" in payload and _wants_max_completion_tokens(error):
                 logger.info(
@@ -336,6 +551,17 @@ def chat(
                 payload["max_completion_tokens"] = payload.pop("max_tokens")
                 continue
 
+            if "reasoning" in payload and _reasoning_rejected(error):
+                logger.warning(
+                    "Модель %s не приняла отключение размышлений (reasoning.effort=none) — "
+                    "повторяем без него; генерация будет медленнее",
+                    model,
+                )
+                with _no_reasoning_lock:
+                    _no_thinking_off_models.add(model)
+                payload.pop("reasoning", None)
+                continue
+
             if "reasoning_effort" in payload and _reasoning_rejected(error):
                 logger.info(
                     "Модель %s не приняла reasoning_effort — повторяем запрос без него", model
@@ -345,6 +571,14 @@ def chat(
                 payload.pop("reasoning_effort", None)
                 continue
 
+            logger.info(
+                "ИИ: %s · %s · %s · %.1f с · ошибка: %s",
+                what,
+                model,
+                label or "—",
+                time.monotonic() - started,
+                error.reason,
+            )
             raise
 
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
@@ -353,7 +587,26 @@ def chat(
         usage.get("completion_tokens") or usage.get("output_tokens")
     )
 
+    details = usage.get("completion_tokens_details")
+    reasoning_tokens = (
+        _as_count(details.get("reasoning_tokens")) if isinstance(details, dict) else 0
+    )
+
     text, finish_reason, problem = _read_answer(data, max_tokens)
+    seconds = time.monotonic() - started
+
+    # Замер: одна строка на запрос. По этим строкам видно, где уходит время.
+    logger.info(
+        "ИИ: %s · %s · %s · %.1f с · токены %s→%s%s%s",
+        what,
+        model,
+        label or "—",
+        seconds,
+        prompt_tokens,
+        completion_tokens,
+        f" (из них размышления {reasoning_tokens})" if reasoning_tokens else "",
+        "" if problem is None else f" · {problem}",
+    )
 
     record_request(
         ctx,
@@ -374,14 +627,32 @@ def chat(
             problem,
             _describe_shape(data),
         )
-        raise AIError(problem)
+        error = AIError(problem, short=_short_problem(problem, finish_reason))
+        error.truncated = finish_reason == "length"
+        # Сколько токенов ушло: по этому вызывающий решает, поможет ли лимит побольше.
+        error.completion_tokens = completion_tokens  # type: ignore[attr-defined]
+        error.reasoning_tokens = reasoning_tokens  # type: ignore[attr-defined]
+        raise error
 
     return ChatResult(
         text=text,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         finish_reason=finish_reason,
+        seconds=seconds,
+        reasoning_tokens=reasoning_tokens,
     )
+
+
+def _short_problem(problem: str, finish_reason: str) -> str:
+    """Причина плохого ответа в двух-трёх словах — для подписи в таблице."""
+    if finish_reason == "length":
+        return "лимит токенов ушёл на размышления"
+    if "отказался" in problem:
+        return "ИИ отказался отвечать"
+    if "пустой" in problem:
+        return "пустой ответ ИИ"
+    return "непонятный ответ ИИ"
 
 
 def _as_count(value: object) -> int:
