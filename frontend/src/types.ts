@@ -313,6 +313,8 @@ export type AttemptDetailItem = {
   accepted_option_ids: number[]
   options: ReviewOption[]
   chosen_option_id: number | null
+  /** Правильный ответ исправляли — каким он был (иначе null). */
+  original_answer: string | null
 }
 
 /** Вариант ответа задания с выбором — для правок после работы. */
@@ -333,6 +335,9 @@ export type ReviewAction =
   | 'uncredit_all'
   | 'exclude'
   | 'include'
+  | 'set_answer'
+  | 'set_option'
+  | 'restore_answer'
 
 /** Строка сводки «где ошиблись» — одно задание одного варианта. */
 export type TaskReviewRow = {
@@ -351,8 +356,19 @@ export type TaskReviewRow = {
   excluded: boolean
   answered: number
   wrong: number
-  /** Частые неверные ответы. Пустой answer — «не ответил». */
-  top_wrong: { answer: string; count: number; option_id: number | null }[]
+  /** Правильный ответ исправляли — каким он был (иначе null). */
+  original_answer: string | null
+  /**
+   * Частые неверные ответы. Пустой answer — «не ответил».
+   * students — короткие фамилии («Иванов И.»), не больше 5; more — сколько ещё.
+   */
+  top_wrong: {
+    answer: string
+    count: number
+    option_id: number | null
+    students: string[]
+    more: number
+  }[]
 }
 
 export type ReviewLogEntry = {

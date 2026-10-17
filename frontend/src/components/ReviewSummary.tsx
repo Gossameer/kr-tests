@@ -1,5 +1,6 @@
 /**
- * «Где ошиблись»: сводка по заданиям всех вариантов, сгруппированная по умениям.
+ * «Ошибки учеников: можно исправить оценку» — сводка по заданиям всех вариантов,
+ * сгруппированная по умениям.
  *
  * При 30 вариантах открывать каждую работу долго. Здесь у каждого задания видно,
  * сколько учеников ответили неверно и какие неверные ответы встречались чаще,
@@ -10,7 +11,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchReviewLog, fetchTasksReview, reviewTask } from '../api'
 import type { ReviewLogEntry, TaskReviewRow } from '../types'
+import { plural } from '../lib/checklist'
 import MathText from './MathText'
+import { ACTION_HINTS } from '../lib/reviewHints'
 import TaskReviewActions from './TaskReviewActions'
 
 type Props = {
@@ -84,10 +87,20 @@ export default function ReviewSummary({ testId, revision, onChanged }: Props) {
 
   return (
     <div className="reviewsummary">
-      <p className="muted">
-        Задание составлено неудачно? Засчитайте верный по сути ответ, засчитайте задание всем
-        или исключите его из оценки — все сданные работы пересчитаются сами: баллы, проценты,
-        умения, статистика и Excel. Ответы учеников не меняются, любую правку можно отменить.
+      <ul className="howto">
+        <li>
+          ИИ ошибся в правильном ответе — нажмите <b>«Исправить правильный ответ»</b>.
+        </li>
+        <li>
+          Ученик ответил верно, но иначе записал — <b>«Считать этот ответ верным»</b>.
+        </li>
+        <li>
+          Задание некорректное — <b>«Засчитать всем»</b> или <b>«Исключить из оценки»</b>.
+        </li>
+      </ul>
+      <p className="hint">
+        Все сданные работы пересчитаются сами: баллы, проценты, умения, статистика, Excel и ключ
+        ответов. Ответы учеников не меняются, любую правку можно отменить.
       </p>
       <label className="check check--inline">
         <input type="checkbox" checked={showAll} onChange={(event) => setShowAll(event.target.checked)} />
@@ -123,7 +136,7 @@ export default function ReviewSummary({ testId, revision, onChanged }: Props) {
                       <MathText text={task.text} />
                     </p>
                     <p className="hint">
-                      Правильно:{' '}
+                      Правильный ответ:{' '}
                       {task.answer_format === 'choice' ? (
                         <MathText text={task.options.find((option) => option.is_correct)?.text ?? '—'} />
                       ) : (
@@ -135,24 +148,36 @@ export default function ReviewSummary({ testId, revision, onChanged }: Props) {
                       <ul className="wronglist">
                         {task.top_wrong.map((item) => (
                           <li key={`${item.answer}-${item.option_id ?? ''}`}>
-                            <span className="wronglist__answer">
+                            <span>
                               {item.answer === '' ? (
-                                <i>нет ответа</i>
+                                'Не ответили'
                               ) : (
-                                <MathText text={item.answer} />
-                              )}
+                                <>
+                                  {task.answer_format === 'choice' ? 'Выбрали ' : 'Ответили '}
+                                  <span className="wronglist__answer">
+                                    «<MathText text={item.answer} />»
+                                  </span>
+                                </>
+                              )}{' '}
+                              — {item.count} {plural(item.count, 'ученик', 'ученика', 'учеников')}:{' '}
+                              {item.students.join(', ')}
+                              {item.more > 0 && ` и ещё ${item.more}`}
                             </span>
-                            <span className="hint"> — {item.count} уч.</span>
                             {item.answer !== '' && !task.credit_all && !task.excluded && (
                               <button
                                 type="button"
                                 className="btn btn--small btn--ghost"
                                 disabled={busyAnswer !== ''}
+                                title={
+                                  task.answer_format === 'choice' ? ACTION_HINTS.acceptOption : ACTION_HINTS.acceptAnswer
+                                }
                                 onClick={() => void acceptWrong(task, item.answer, item.option_id)}
                               >
                                 {busyAnswer === `${task.task_id}:${item.answer}`
                                   ? 'Пересчитываем…'
-                                  : 'засчитать этот ответ'}
+                                  : task.answer_format === 'choice'
+                                    ? 'Засчитать этот вариант'
+                                    : 'Считать этот ответ верным'}
                               </button>
                             )}
                           </li>

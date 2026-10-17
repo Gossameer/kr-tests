@@ -10,7 +10,11 @@
   add_answer / remove_answer        — ещё один верный ответ для ввода;
   accept_option / unaccept_option   — ещё один засчитываемый вариант у выбора;
   credit_all / uncredit_all         — засчитать задание всем, кто его получил;
-  exclude / include                 — исключить задание из оценки и вернуть.
+  exclude / include                 — исключить задание из оценки и вернуть;
+  set_answer / set_option           — ИСПРАВИТЬ правильный ответ (заменить, а не добавить):
+                                      у ввода — новый ответ (несколько записей через «|»),
+                                      у выбора — другой верный вариант;
+  restore_answer                    — вернуть исходный правильный ответ.
 
 После каждой правки на сервере перепроверяются ВСЕ сданные попытки работы
 (app/rescoring.py): баллы, проценты, умения, статистика и Excel считаются уже
@@ -49,7 +53,21 @@ ACTION_NAMES = {
     "uncredit_all": "отменил «засчитать всем»",
     "exclude": "исключил задание из оценки",
     "include": "вернул задание в оценку",
+    "set_answer": "исправил правильный ответ",
+    "set_option": "отметил другой вариант как верный",
+    "restore_answer": "вернул исходный правильный ответ",
 }
+
+# Сколько фамилий показывать у частого неверного ответа — дальше «и ещё N».
+NAMES_SHOWN = 5
+
+
+def short_name(full_name: str) -> str:
+    """«Иванов Иван» → «Иванов И.»: в сводке фамилии короткие, как в журнале."""
+    parts = full_name.split()
+    if len(parts) < 2:
+        return full_name
+    return f"{parts[0]} " + " ".join(f"{part[0]}." for part in parts[1:3])
 
 
 class ReviewAction(BaseModel):
@@ -62,6 +80,9 @@ class ReviewAction(BaseModel):
         "uncredit_all",
         "exclude",
         "include",
+        "set_answer",
+        "set_option",
+        "restore_answer",
     ]
     # Для add_answer / remove_answer — сам ответ.
     answer: str = ""
@@ -82,7 +103,8 @@ def task_state(conn, test_id: int, task_id: int) -> dict:
     row = conn.execute(
         """
         SELECT id, variant_no, position, text, answer_format, accepted_answers,
-               extra_answers, extra_option_ids, credit_all, excluded
+               extra_answers, extra_option_ids, credit_all, excluded,
+               original_answers, original_correct_option
         FROM tasks WHERE id = %s AND test_id = %s
         """,
         (task_id, test_id),
@@ -97,6 +119,90 @@ def task_state(conn, test_id: int, task_id: int) -> dict:
 
 def place(task: dict) -> str:
     return f"вариант {task['variant_no']}, задание {task['position']}"
+
+
+def fix_correct_answer(conn, task: dict, action: str, payload: "ReviewAction") -> str:
+    """
+    «Исправить правильный ответ»: новый ответ пишется прямо в задание, исходный —
+    в original_* (один раз, при первой правке), чтобы её можно было отменить.
+    Возвращает подробность для журнала.
+    """
+    task_id = task["id"]
+    if action == "set_answer":
+        if task["answer_format"] != "input":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="У задания с выбором отмечают другой верный вариант, а не вводят ответ.",
+            )
+        answers = [plain_text(part).strip() for part in payload.answer.split("|")]
+        answers = list(dict.fromkeys(answer for answer in answers if answer))[:MAX_ANSWERS]
+        if not answers:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Впишите правильный ответ. Несколько записей — через «|».",
+            )
+        conn.execute(
+            """
+            UPDATE tasks SET original_answers = coalesce(original_answers, accepted_answers),
+                             accepted_answers = %s
+            WHERE id = %s
+            """,
+            (answers, task_id),
+        )
+        return f": было «{' | '.join(task['accepted_answers'])}», стало «{' | '.join(answers)}»"
+
+    options = conn.execute(
+        "SELECT id, text, is_correct FROM task_options WHERE task_id = %s ORDER BY position, id",
+        (task_id,),
+    ).fetchall()
+    current = next((option for option in options if option["is_correct"]), None)
+
+    if action == "set_option":
+        if task["answer_format"] != "choice":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="У задания с вводом исправляют ответ, а не вариант.",
+            )
+        chosen = next((option for option in options if option["id"] == payload.option_id), None)
+        if chosen is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Такого варианта ответа у задания нет. Обновите страницу.",
+            )
+        if chosen["is_correct"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Этот вариант и так верный.")
+        conn.execute(
+            "UPDATE tasks SET original_correct_option = coalesce(original_correct_option, %s) WHERE id = %s",
+            (current["id"] if current else None, task_id),
+        )
+        conn.execute("UPDATE task_options SET is_correct = (id = %s) WHERE task_id = %s", (chosen["id"], task_id))
+        # Вариант стал основным верным — отдельный «зачёт» ему больше не нужен.
+        conn.execute(
+            "UPDATE tasks SET extra_option_ids = array_remove(extra_option_ids, %s) WHERE id = %s",
+            (chosen["id"], task_id),
+        )
+        before = plain_text(current["text"]) if current else "—"
+        return f": было «{before}», стало «{plain_text(chosen['text'])}»"
+
+    # restore_answer
+    if task["original_answers"] is None and task["original_correct_option"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Правильный ответ этого задания не исправляли — возвращать нечего.",
+        )
+    if task["original_answers"] is not None:
+        conn.execute(
+            "UPDATE tasks SET accepted_answers = original_answers, original_answers = NULL WHERE id = %s",
+            (task_id,),
+        )
+        return f": снова «{' | '.join(task['original_answers'])}»"
+    conn.execute(
+        "UPDATE task_options SET is_correct = (id = %s) WHERE task_id = %s",
+        (task["original_correct_option"], task_id),
+    )
+    conn.execute("UPDATE tasks SET original_correct_option = NULL WHERE id = %s", (task_id,))
+    original = next((o for o in options if o["id"] == task["original_correct_option"]), None)
+    return f": снова «{plain_text(original['text']) if original else '—'}»"
 
 
 @router.post("/{test_id}/tasks/{task_id}/review", summary="Поправить задание и пересчитать работы")
@@ -183,10 +289,12 @@ def review_task(
             conn.execute(
                 "UPDATE tasks SET credit_all = %s WHERE id = %s", (action == "credit_all", task_id)
             )
-        else:
+        elif action in ("exclude", "include"):
             conn.execute(
                 "UPDATE tasks SET excluded = %s WHERE id = %s", (action == "exclude", task_id)
             )
+        else:
+            detail += fix_correct_answer(conn, task, action, payload)
 
         changed = rescore_test(conn, test_row["id"])
         conn.execute(
@@ -208,6 +316,8 @@ def review_task(
     )
     return {
         "task_id": task_id,
+        "accepted_answers": task["accepted_answers"],
+        "original_answers": task["original_answers"],
         "extra_answers": task["extra_answers"],
         "extra_option_ids": task["extra_option_ids"],
         "credit_all": task["credit_all"],
@@ -237,6 +347,7 @@ def tasks_review(test_id: int = Path(ge=1), user: dict = Depends(require_user)) 
             """
             SELECT t.id, t.variant_no, t.position, t.text, t.answer_format,
                    t.accepted_answers, t.extra_answers, t.extra_option_ids,
+                   t.original_answers, t.original_correct_option,
                    t.credit_all, t.excluded, s.id AS skill_id, s.position AS skill_position,
                    s.title AS skill_title
             FROM tasks t JOIN skills s ON s.id = t.skill_id
@@ -255,7 +366,7 @@ def tasks_review(test_id: int = Path(ge=1), user: dict = Depends(require_user)) 
         ).fetchall()
         answers = conn.execute(
             """
-            SELECT ans.task_id, ans.option_id, ans.answer_text, ans.is_correct
+            SELECT ans.task_id, ans.option_id, ans.answer_text, ans.is_correct, a.student_name
             FROM answers ans JOIN attempts a ON a.id = ans.attempt_id
             WHERE a.test_id = %s AND a.finished_at IS NOT NULL AND a.annulled_at IS NULL
             """,
@@ -289,10 +400,15 @@ def tasks_review(test_id: int = Path(ge=1), user: dict = Depends(require_user)) 
             else:
                 raw = (answer["answer_text"] or "").strip()
                 key, shown = (normalize_answer(raw), raw) if raw else ("", "")
-            group = groups.setdefault(key, [0, shown, answer["option_id"]])
+            group = groups.setdefault(key, [0, shown, answer["option_id"], []])
             group[0] += 1
+            group[3].append(short_name(answer["student_name"]))
 
         top = sorted(groups.values(), key=lambda item: (-item[0], item[1]))
+        original_option = next(
+            (o["text"] for o in options_by_task.get(task["id"], []) if o["id"] == task["original_correct_option"]),
+            None,
+        )
         result.append(
             {
                 "task_id": task["id"],
@@ -305,6 +421,12 @@ def tasks_review(test_id: int = Path(ge=1), user: dict = Depends(require_user)) 
                 "answer_format": task["answer_format"],
                 "accepted_answers": task["accepted_answers"],
                 "extra_answers": task["extra_answers"],
+                # Учитель исправил правильный ответ: что было (для «Вернуть прежний ответ»).
+                "original_answer": (
+                    " | ".join(task["original_answers"])
+                    if task["original_answers"] is not None
+                    else original_option
+                ),
                 "options": [
                     {
                         "id": option["id"],
@@ -320,8 +442,14 @@ def tasks_review(test_id: int = Path(ge=1), user: dict = Depends(require_user)) 
                 "wrong": len(wrong),
                 # Пустая строка — «не ответил»: такой ответ засчитать нельзя.
                 "top_wrong": [
-                    {"answer": shown, "count": count, "option_id": option_id}
-                    for count, shown, option_id in top[:TOP_WRONG]
+                    {
+                        "answer": shown,
+                        "count": count,
+                        "option_id": option_id,
+                        "students": sorted(names)[:NAMES_SHOWN],
+                        "more": max(0, len(names) - NAMES_SHOWN),
+                    }
+                    for count, shown, option_id, names in top[:TOP_WRONG]
                 ],
             }
         )

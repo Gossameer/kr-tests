@@ -291,6 +291,8 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
             t.extra_option_ids  AS extra_option_ids,
             t.credit_all        AS credit_all,
             t.excluded          AS excluded,
+            t.original_answers  AS original_answers,
+            original_option.text AS original_option_text,
             ans.option_id       AS chosen_option_id,
             s.title             AS skill_title,
             chosen.text         AS chosen_text,
@@ -304,6 +306,7 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
         LEFT JOIN task_options chosen ON chosen.id = ans.option_id
         LEFT JOIN task_options right_option
                ON right_option.task_id = t.id AND right_option.is_correct
+        LEFT JOIN task_options original_option ON original_option.id = t.original_correct_option
         WHERE t.test_id = %s AND t.variant_no = %s
         ORDER BY t.position, t.id
         """,
@@ -352,6 +355,11 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
                 "accepted_option_ids": row["extra_option_ids"],
                 "options": options_by_task.get(row["task_id"], []),
                 "chosen_option_id": row["chosen_option_id"],
+                "original_answer": (
+                    " | ".join(row["original_answers"])
+                    if row["original_answers"] is not None
+                    else row["original_option_text"]
+                ),
             }
         )
 

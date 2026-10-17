@@ -531,6 +531,8 @@ class AttemptDetailItem(BaseModel):
     # Варианты ответа задания с выбором — чтобы засчитать один из них прямо из разбора.
     options: list[dict] = []
     chosen_option_id: int | None = None
+    # Учитель исправил правильный ответ — каким он был (иначе None).
+    original_answer: str | None = None
 
 
 class AttemptDetail(BaseModel):

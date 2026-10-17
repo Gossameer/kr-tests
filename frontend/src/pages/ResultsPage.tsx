@@ -632,8 +632,8 @@ export default function ResultsPage() {
       {/* ------------------------- Не сформированные умения ------------------------- */}
       {counted.length > 0 && (
         <section className="card">
-          <h2>Что не сформировано</h2>
-          <p className="muted">Сверху — умения, с которыми справились хуже всего.</p>
+          <h2>Как справились с умениями</h2>
+          <p className="muted">Все умения, сначала самые слабые.</p>
 
           <ol className="stats">
             {weakestFirst.map((skill) => (
@@ -668,7 +668,7 @@ export default function ResultsPage() {
       {/* ------------------------- Где ошиблись ------------------------- */}
       {data.attempts_count > 0 && (
         <section className="card" id="review-summary">
-          <h2>Где ошиблись — и исправить задание</h2>
+          <h2>Ошибки учеников: можно исправить оценку</h2>
           <ReviewSummary testId={testId} revision={revision} onChanged={handleReviewed} />
         </section>
       )}

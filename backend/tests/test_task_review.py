@@ -223,7 +223,7 @@ class Review(unittest.TestCase):
         right_option = self.attempts["Вера Третья"]["options"][0]["id"]
 
         summary = self.task_summary(choice_task)
-        self.assertEqual(summary["top_wrong"], [{"answer": "6", "count": 1, "option_id": wrong_option}])
+        self.assertEqual(summary["top_wrong"], [{"answer": "6", "count": 1, "option_id": wrong_option, "students": ["Вера Т."], "more": 0}])
 
         self.assertEqual(self.review(choice_task, "accept_option", option_id=wrong_option)[0], 200)
         self.assertEqual(self.scores()["Вера Третья"], (1, 2, 50))

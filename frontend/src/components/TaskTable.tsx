@@ -310,7 +310,7 @@ export default function TaskTable({
                         onClick={() => openBulk(skillIndex, null)}
                         title="ИИ поправит или заменит задания этого умения во всех вариантах"
                       >
-                        Изменить во всех вариантах
+                        Исправить во всех вариантах…
                       </button>
                     )}
                   </td>
@@ -655,9 +655,11 @@ export default function TaskTable({
                   onClick={() => void handleRegenerate()}
                   disabled={regenerating !== null}
                 >
-                  {selectedBusy ? 'Генерируем…' : 'Перегенерировать'}
+                  {selectedBusy ? 'Генерируем…' : 'Заменить это задание'}
                 </button>
-                <span className="hint">то же умение и формат ответа, другие числа</span>
+                <span className="hint">
+                  только вариант {place.variantNo}: новое задание на это же умение, другие числа
+                </span>
               </div>
             )}
             {bulk && (
@@ -669,18 +671,24 @@ export default function TaskTable({
                     openBulk(place.skillIndex, selectedSkill.tasksPerVariant > 1 ? place.order : null)
                   }
                 >
-                  Изменить во всех вариантах
+                  Исправить во всех вариантах…
                 </button>
                 <span className="hint">
-                  такое же задание
-                  {selectedSkill.tasksPerVariant > 1 ? ` (№ ${place.order + 1} этого умения)` : ''} во
-                  всех вариантах — по вашему замечанию
+                  опишите, что не так — ИИ переделает это задание во всех вариантах, вы посмотрите
+                  и примете
                 </span>
               </div>
             )}
+
+            <details className="details manualreplace" open={!aiEnabled}>
+              <summary>Без встроенного ИИ (вручную)</summary>
+              <p className="hint">
+                Если встроенный ИИ недоступен: скопируйте запрос, вставьте его в любой ИИ (чат),
+                а ответ вставьте сюда.
+              </p>
             <div className="row row--tight">
               <button type="button" className="btn btn--ghost" onClick={handleCopyPrompt}>
-                Скопировать промт для замены
+                Скопировать запрос для ИИ
               </button>
               {promptCopied && <span className="copied">Скопировано</span>}
             </div>
@@ -716,6 +724,7 @@ export default function TaskTable({
                 </ul>
               </div>
             )}
+            </details>
           </div>
         </section>
       )}

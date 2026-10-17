@@ -2145,3 +2145,27 @@ code {
   background: var(--bg);
   color: var(--muted);
 }
+
+
+/* ===================== Понятные действия учителя ===================== */
+
+.howto {
+  margin: 0 0 var(--gap-xs);
+  padding-left: 1.2em;
+}
+
+.howto li {
+  margin-bottom: 2px;
+}
+
+.optionpicker {
+  margin-top: var(--gap-xs);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.manualreplace {
+  margin-top: var(--gap-m);
+}
