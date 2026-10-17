@@ -79,7 +79,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         system = payload["messages"][0]["content"]
-        kind = "check" if "решаешь" in system else "generate"
+        kind = "check" if "решаешь" in system else "review" if "проверяешь" in system else "generate"
         with stub.lock:
             stub.requests.append((kind, payload))
             script = stub.script

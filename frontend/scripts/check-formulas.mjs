@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import katex from 'katex'
+import { answerFormatHint } from '../src/lib/answerHint.ts'
 import {
   answerPreviewLatex,
   fixLatexEscapes,
@@ -137,5 +138,20 @@ assert.equal(plainAnswer('$\\frac{3}{5}$'), '3/5')
 assert.equal(plainAnswer('$2\\frac{1}{3}$'), '2 1/3')
 assert.equal(plainAnswer('$2{,}5$'), '2,5')
 assert.equal(plainAnswer('Париж'), 'Париж')
+
+/* ---------- 6. Подсказка «как записать ответ» ---------- */
+
+assert.equal(
+  answerFormatHint('Найдите наибольшее целое $x$, при котором $\\log_3(7 - x)$ определён. Ответ запишите целым числом.'),
+  'Ответ запишите целым числом.',
+)
+assert.equal(
+  answerFormatHint('Вычислите $2.5 \\cdot 2$. Ответ запишите десятичной дробью через запятую.'),
+  'Ответ запишите десятичной дробью через запятую.',
+)
+assert.equal(answerFormatHint('В каком году основан Петербург? Ответ запишите годом из четырёх цифр.'),
+  'Ответ запишите годом из четырёх цифр.')
+assert.equal(answerFormatHint('Найдите длину промежутка области определения.'), null)
+assert.equal(answerFormatHint('Найдите корень уравнения. Ответ: число.'), 'Ответ: число.')
 
 console.log(`Формулы: всё в порядке (команд сервера сверено с KaTeX: ${symbols.length + functions.length + fractions.length + upright.length + accents.length + escaped.length})`)

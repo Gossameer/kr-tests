@@ -34,6 +34,7 @@ import {
 } from '../lib/attemptStorage'
 import MathText, { MathFormula } from '../components/MathText'
 import { plural } from '../lib/checklist'
+import { answerFormatHint } from '../lib/answerHint'
 import { answerPreviewLatex } from '../lib/formula'
 import { getOrCreateSeed, shuffleWithSeed } from '../lib/shuffle'
 import { usePageTitle } from '../lib/usePageTitle'
@@ -594,10 +595,18 @@ export default function StudentTestPage() {
                   autoComplete="off"
                 />
                 <AnswerPreview value={inputs[task.id] ?? ''} />
-                <p className="hint">
-                  Только ответ — число или слово, без решения. Дробь пишите через косую
-                  черту: 3/5, степень — через «^»: 2^3.
-                </p>
+                {answerFormatHint(task.text) !== null ? (
+                  // Как записать ответ — прямо из условия: «Ответ запишите целым числом».
+                  <p className="hint answerformat">
+                    <b>Как записать ответ:</b>{' '}
+                    <MathText text={answerFormatHint(task.text) ?? ''} />
+                  </p>
+                ) : (
+                  <p className="hint">
+                    Только ответ — число или слово, без решения. Дробь пишите через косую
+                    черту: 3/5, степень — через «^»: 2^3.
+                  </p>
+                )}
               </div>
             )}
           </li>

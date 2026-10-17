@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # стоимость, без него резерв считается по максимуму модели.
     ai_gen_max_tokens: int = 4000
     ai_check_max_tokens: int = 1500
+    # Проверять ли ещё и РЕШЕНИЕ задания (отдельный запрос к модели самопроверки):
+    # сходится ли оно с ответом и нет ли сомнительных фактов. off — только решать заново.
+    ai_check_solution: str = "on"
     ai_timeout_seconds: float = 120
     # Паузы (в секундах) перед повторами временных сбоев: обрыв связи, таймаут,
     # 429 и 5xx. Сколько чисел — столько повторов. Для генерации и самопроверки.
@@ -150,6 +153,10 @@ class Settings(BaseSettings):
     @property
     def ai_gen_thinking_off(self) -> bool:
         return self.ai_gen_thinking.strip().lower() not in ("on", "true", "1", "yes")
+
+    @property
+    def ai_check_solution_on(self) -> bool:
+        return self.ai_check_solution.strip().lower() not in ("off", "false", "0", "no")
 
     @property
     def ai_check_model_name(self) -> str:

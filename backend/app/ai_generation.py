@@ -174,6 +174,35 @@ STRESS_INPUT = (
 )
 
 
+# Правила качества для ВСЕХ предметов. Выросли из настоящих ошибок: «длина
+# промежутка» с ответом «бесконечность» в формате ввода, решение «их бесконечно
+# много» при ответе 3, «на рисунке изображён график», которого нет.
+QUALITY_RULES = [
+    "формат «ввод» — только когда правильный ответ ОДИН и короткий (число, слово, дата, термин) "
+    "и записать его можно однозначно; если у ответа несколько верных записей (синонимы, "
+    "варианты написания, don't и do not, 0,5 и 0.5) — перечисли в \"answers\" ВСЕ",
+    "в математике, физике, химии и информатике ответ для ввода — ОДНО конечное число (целое "
+    "или десятичная дробь); бесконечность, промежутки, множества, «нет решений», несколько "
+    "ответов — не для ввода: переформулируй задачу так, чтобы ответом было одно число "
+    "(например, «наибольшее целое значение», «сумма корней», «количество целых решений»)",
+    "в конце текста КАЖДОГО задания с вводом напиши, как записать ответ: «Ответ запишите "
+    "целым числом.», «Ответ запишите десятичной дробью через запятую.», «Ответ запишите "
+    "одним словом в именительном падеже.», «Ответ запишите годом из четырёх цифр.» и т. п.",
+    "задача корректна: у неё есть однозначный правильный ответ, решение приводит именно к нему "
+    "и ничему в условии не противоречит",
+    "не составляй вопросов на мнение и толкование («объясните», «как вы понимаете», «ваше "
+    "мнение») — их нельзя проверить автоматически",
+    "не ссылайся на рисунки, графики, чертежи, схемы, карты, таблицы, тексты и опыты, которых "
+    "нет в самом задании; если нужен текст (литература, русский язык) — приведи фрагмент прямо "
+    "в задании",
+    "факты (даты, имена, события, термины) — только общеизвестные школьные, в формулировках "
+    "учебника",
+    "в \"solution\" — только итоговое верное решение, без черновых рассуждений («давайте», "
+    "«переформулируем», «лучше так»); если задача не получилась — замени её целиком, а не "
+    "объясняй в решении, почему она плохая",
+]
+
+
 def is_stress_skill(title: str) -> bool:
     return bool(STRESS_RE.search(title))
 
@@ -247,13 +276,13 @@ def skill_messages(
         "Требования:",
         "- задания во всех вариантах РАЗНЫЕ: другие числа, данные, формулировки и примеры, "
         "но тот же тип и та же сложность — варианты должны быть равноценны;",
-        "- у заданий с вводом ответа перечисли в \"answers\" все правильные формы записи "
-        '(например "0,5" и "0.5"), ответ короткий — число или несколько слов;',
         '- к КАЖДОМУ заданию краткое решение в "solution" (1–2 строки, для учителя);',
-        "- задания должны быть решаемы и иметь однозначный ответ;",
+        *[f"- {rule};" for rule in QUALITY_RULES],
         f"- {NO_ANSWER_IN_TEXT};",
         f"- {SCHOOL_NOTATION}",
     ]
+    if skill.get("ai_hint", "").strip():
+        parts += ["", f"Уточнение учителя к этому умению (выполни обязательно): {skill['ai_hint'].strip()}"]
     if stress_rule(skill):
         parts += ["", stress_rule(skill)]
 
@@ -314,10 +343,14 @@ def task_messages(
     parts += [
         "",
         'К заданию обязательно краткое решение в "solution".',
+        "Требования:",
+        *[f"- {rule};" for rule in QUALITY_RULES],
         NO_ANSWER_IN_TEXT + ".",
         SCHOOL_NOTATION[:1].upper() + SCHOOL_NOTATION[1:],
         stress_rule(skill),
     ]
+    if skill.get("ai_hint", "").strip():
+        parts += [f"Уточнение учителя к этому умению (выполни обязательно): {skill['ai_hint'].strip()}"]
     if previous_error:
         parts += ["", f"Прошлый ответ не подошёл: {previous_error}. Исправь это."]
     parts += ["", "Верни ТОЛЬКО JSON одного задания:", shape]
@@ -781,7 +814,92 @@ def answer_visible(task: dict) -> bool:
     )
 
 
-def task_warning(task: dict) -> str:
+# Предметы, где ответ для ввода — число.
+MATH_SUBJECT_RE = re.compile(r"математ|алгебр|геометр|вероятност|статистик", re.IGNORECASE)
+NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+FRACTION_RE = re.compile(r"-?\d+/\d+")
+# Ответ, который ученик не сможет однозначно набрать: бесконечность, промежуток, множество.
+UNCLEAR_ANSWER_RE = re.compile(r"∞|бесконечн|нет решени|∅|∪|[;\[\]()]|\\infty", re.IGNORECASE)
+# Ссылка на то, чего в задании быть не может.
+MISSING_PICTURE_RE = re.compile(
+    r"на\s+(рисунк|график|чертеж|чертёж|схем|карт[еыу]|диаграмм|фотограф|иллюстрац)"
+    r"|по\s+(рисунк|график|чертеж|чертёж|схем|карт[еу]|диаграмм|таблиц)"
+    r"|(в|из)\s+таблиц|данн\w*\s+(таблиц|график|диаграмм|схем)|см\.?\s*(рис|табл|схем|график)|изображ[её]н|представлен[аоы]?\s+на"
+    r"|в\s+тексте\s+выше|прочитайте\s+текст|в\s+опыте,\s+показанном",
+    re.IGNORECASE,
+)
+# Как записать ответ: «Ответ запишите целым числом», «…одним словом», «…годом».
+FORMAT_HINT_RE = re.compile(
+    r"(ответ|запишите|введите|укажите|напишите)[^.?!]*"
+    r"(числ|дроб|слов|цифр|падеж|букв|год|через\s+запят|целым|десятичн|градус|единиц|"
+    r"сантиметр|метр|грамм|литр|секунд|рубл|процент|форм[еуы]|в\s+виде|латиниц|английск)",
+    re.IGNORECASE,
+)
+# Черновик в решении: модель передумывала по ходу («Переформулируем…», «Давайте лучше…»).
+DRAFT_SOLUTION_RE = re.compile(
+    r"переформулир|давайте|лучше\s+так|лучше:|исправ(им|лю)|на\s+самом\s+деле|"
+    r"задача\s+некорректн|ошибка\s+в\s+условии",
+    re.IGNORECASE,
+)
+
+
+def short_reason(text: str, limit: int = 160) -> str:
+    """Причина для учителя — не длиннее limit, обрезана по слову."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+# Вопрос на мнение — автоматически не проверить.
+OPINION_RE = re.compile(
+    r"как\s+вы\s+понимаете|ваше\s+мнение|объясните|поясните|выскажите|почему\s+вы|"
+    r"согласны\s+ли\s+вы|ваше\s+отношение",
+    re.IGNORECASE,
+)
+
+
+def is_math_subject(subject: str) -> bool:
+    return bool(MATH_SUBJECT_RE.search(subject or ""))
+
+
+def numeric_answer(answer: str, text: str) -> bool:
+    """Ответ — одно конечное число (целое или десятичное; обыкновенная дробь — если так просили)."""
+    value = plain_text(answer).replace(" ", "").replace("\u2212", "-")
+    if NUMBER_RE.fullmatch(value):
+        return True
+    return bool(FRACTION_RE.fullmatch(value)) and "обыкновенн" in text.lower()
+
+
+def format_warnings(task: dict, subject: str = "") -> list[str]:
+    """
+    Правила этапа «качество заданий»: ученик должен понимать, как записать ответ,
+    и в задании не должно быть ссылок на то, чего нет.
+    """
+    warnings: list[str] = []
+    text = plain_text(task["text"])
+    if MISSING_PICTURE_RE.search(text):
+        warnings.append("ссылка на рисунок, которого нет")
+    if OPINION_RE.search(text):
+        warnings.append("вопрос на мнение — автоматически не проверить")
+    if DRAFT_SOLUTION_RE.search(plain_text(task.get("solution", ""))):
+        warnings.append("в решении черновые рассуждения — проверьте, сходится ли оно с ответом")
+    if task["answer_format"] != "input":
+        return warnings
+
+    answers = task["accepted_answers"]
+    if any(UNCLEAR_ANSWER_RE.search(plain_text(answer)) for answer in answers) or (
+        is_math_subject(subject) and not all(numeric_answer(answer, text) for answer in answers)
+    ):
+        warnings.append("ученик не поймёт, как записать ответ")
+    elif any(len(plain_text(answer).split()) > 4 for answer in answers):
+        warnings.append("ответ длиннее нескольких слов — вводом его не проверить")
+    if not FORMAT_HINT_RE.search(text):
+        warnings.append("не указано, как записать ответ")
+    return warnings
+
+
+def task_warning(task: dict, subject: str = "") -> str:
     """Что не так с самим заданием (не с ответом): причина для пометки needs_review."""
     warnings: list[str] = []
     if answer_visible(task):
@@ -797,7 +915,98 @@ def task_warning(task: dict) -> str:
         if problem:
             warnings.append(f"ошибка в формуле: {problem}")
             break
+    warnings += format_warnings(task, subject)
     return "; ".join(warnings)
+
+
+def solution_messages(request: dict, task: dict) -> list[dict]:
+    """
+    Второй шаг самопроверки: модель видит задание, ответ и решение и ищет
+    противоречия («их бесконечно много» при ответе «3»), ошибки и сомнительные факты.
+    """
+    if task["answer_format"] == "choice":
+        options = "\n".join(
+            f"{number}) {option}" for number, option in enumerate(task["options"], start=1)
+        )
+        answer = f"Варианты:\n{options}\nПравильным указан вариант {task['correct'] + 1}."
+    else:
+        answer = "Правильный ответ: " + " | ".join(task["accepted_answers"])
+    user = (
+        f"Предмет и тема: {subject_line(request)}. "
+        f"Класс: {request.get('grade', '').strip() or 'не указан'}.\n\n"
+        f"Задание: {task['text']}\n{answer}\nРешение: {task['solution'] or '(нет)'}\n\n"
+        "Проверь строго:\n"
+        "1) решение верно и приводит именно к указанному ответу, ничему не противоречит, "
+        "а задача корректна и имеет один ответ;\n"
+        "2) факты (даты, имена, события, термины) точны и общеизвестны в школьном курсе. "
+        "Ошибки в вычислениях и рассуждениях — это пункт 1, не пункт 2; если фактов в "
+        "задании нет, facts_ok = true.\n"
+        'Верни ТОЛЬКО JSON: {"solution_ok": true или false, "solution_problem": "что не так, '
+        'одной фразой, или пустая строка", "facts_ok": true или false, "facts_problem": '
+        '"какой факт сомнителен, или пустая строка"}'
+    )
+    return [
+        {"role": "system", "content": "Ты строго проверяешь задания для школьных проверочных работ."},
+        {"role": "user", "content": user},
+    ]
+
+
+def _ask_check_model(ctx, messages, cancel, label: str):
+    """Запрос к модели самопроверки с одним повтором, если лимит ушёл на размышления."""
+    settings = get_settings()
+    max_tokens = settings.ai_check_max_tokens
+    for attempt in range(2):
+        try:
+            _raise_if_cancelled(cancel)
+            with http_slots():
+                return chat(
+                    ctx,
+                    kind="check",
+                    model=settings.ai_check_model_name,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    reasoning_effort=settings.ai_check_reasoning_effort,
+                    label=label + (", лимит ×2" if attempt else ""),
+                )
+        except AIError as error:
+            if error.fatal or not (error.truncated and attempt == 0):
+                raise
+            max_tokens *= 2
+            logger.info(
+                "Самопроверка (%s): лимит токенов ушёл на размышления — повторяем с лимитом %s",
+                label or "—",
+                max_tokens,
+            )
+    raise AIError("лимит токенов ушёл на размышления")  # недостижимо
+
+
+def review_solution(ctx, request: dict, task: dict, cancel, label: str = "") -> list[str]:
+    """
+    Проверка решения и фактов. Возвращает замечания для учителя (пусто — всё в порядке).
+    Сбой этой проверки не делает задание жёлтым: главный вердикт даёт решение заново.
+    """
+    try:
+        result = _ask_check_model(ctx, solution_messages(request, task), cancel, label + ", решение")
+        data = json.loads(fix_latex_escapes(extract_json_block(result.text)))
+    except AIError as error:
+        if error.fatal:
+            raise
+        logger.warning("Проверка решения не выполнена (%s): %s", label or "—", error.reason)
+        return []
+    except (ValueError, TypeError):
+        logger.warning("Проверка решения (%s): ответ модели не JSON", label or "—")
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    issues: list[str] = []
+    if data.get("solution_ok") is False:
+        problem = short_reason(_as_string(data.get("solution_problem")))
+        issues.append("решение не сходится с ответом" + (f": {problem}" if problem else ""))
+    if data.get("facts_ok") is False:
+        problem = short_reason(_as_string(data.get("facts_problem")))
+        issues.append("сомнительный факт" + (f": {problem}" if problem else ""))
+    return issues
 
 
 def self_check(
@@ -821,38 +1030,19 @@ def self_check(
     """
     settings = get_settings()
     review = {"status": "unchecked", "generated": generated_answer(task), "checked": ""}
-    max_tokens = settings.ai_check_max_tokens
-    result = None
 
-    for attempt in range(2):
-        try:
-            _raise_if_cancelled(cancel)
-            with http_slots():
-                result = chat(
-                    ctx,
-                    kind="check",
-                    model=settings.ai_check_model_name,
-                    messages=check_messages(request, task),
-                    max_tokens=max_tokens,
-                    reasoning_effort=settings.ai_check_reasoning_effort,
-                    label=label + (", лимит ×2" if attempt else ""),
-                )
-            break
-        except AIError as error:
-            if error.fatal:
-                raise
-            if error.truncated and attempt == 0:
-                max_tokens *= 2
-                logger.info(
-                    "Самопроверка (%s): лимит токенов ушёл на размышления — "
-                    "повторяем с лимитом %s",
-                    label or "—",
-                    max_tokens,
-                )
-                continue
-            review["checked"] = error.short
-            logger.warning("Самопроверка не выполнена (%s): %s", label or "—", error.reason)
-            return review
+    try:
+        result = _ask_check_model(ctx, check_messages(request, task), cancel, label)
+    except AIError as error:
+        if error.fatal:
+            raise
+        review["checked"] = error.short
+        logger.warning("Самопроверка не выполнена (%s): %s", label or "—", error.reason)
+        return review
+
+    # Второй шаг: сходится ли решение с ответом, нет ли сомнительных фактов.
+    if settings.ai_check_solution_on:
+        review["issues"] = review_solution(ctx, request, task, cancel, label)
 
     try:
         return _compare(task, result.text, review)
@@ -893,13 +1083,16 @@ def _compare(task: dict, reply: str, review: dict) -> dict:
     return review
 
 
-def attach_review(task: dict, review: dict) -> dict:
+def attach_review(task: dict, review: dict, subject: str = "") -> dict:
     """
     Задание + итог проверки. needs_review — учителю стоит посмотреть:
     самопроверка не сошлась или не выполнилась, либо с самим заданием что-то
-    не так (ответ виден в условии, ввод не различит ударение).
+    не так (ответ виден в условии, ввод не различит ударение, ученик не поймёт,
+    как записать ответ, решение не сходится с ответом).
     """
-    warning = task_warning(task)
+    warning = "; ".join(
+        item for item in [task_warning(task, subject), *review.get("issues", [])] if item
+    )
     return {
         **task,
         "review": {**review, "warning": warning},
@@ -1193,7 +1386,10 @@ def accept_cell(run: JobRun, skill_index: int, variant_no: int, tasks: list[dict
             cell.update(
                 status="ok",
                 error="",
-                tasks=[attach_review(t, r) for t, r in zip(tasks, reviews)],
+                tasks=[
+                    attach_review(t, r, run.request.get("subject", ""))
+                    for t, r in zip(tasks, reviews)
+                ],
                 version=cell.get("version", 0) + 1,
             )
             _complete_if_all_done(job)
@@ -1512,7 +1708,9 @@ def run_task_job(job_id: int, teacher_id: int) -> None:
             return
 
         task["skill_index"] = request["skill_index"]
-        checked = attach_review(task, self_check(ctx, request, task, cancel, label=label))
+        checked = attach_review(
+            task, self_check(ctx, request, task, cancel, label=label), request.get("subject", "")
+        )
 
         def done(job: dict) -> None:
             job["result"] = {"task": checked}

@@ -201,7 +201,7 @@ class SelfCheck(Base):
         with self.assertLogs("app", "WARNING"):
             review = self.check()
         self.assertEqual(review["status"], "ok")
-        self.assertEqual(stub.requests[-1][1]["max_tokens"], 3000)
+        self.assertEqual([p for k, p in stub.requests if k == "check"][-1]["max_tokens"], 3000)
 
     def test_limit_spent_twice_gives_reason(self) -> None:
         stub.reset(lambda payload, kind: ok("", finish="length", tokens=1500))
@@ -220,7 +220,7 @@ class SelfCheck(Base):
         task = choice_task("Столица Франции?", ["Лион", "Париж", "Ницца", "Марсель"], 1)
         stub.reset(lambda payload, kind: ok("2"))
         self.assertEqual(self.check(task)["status"], "ok")
-        self.assertNotIn("correct", json.dumps(stub.requests[-1][1], ensure_ascii=False))
+        self.assertNotIn("correct", json.dumps([p for k, p in stub.requests if k == "check"][-1], ensure_ascii=False))
 
     def test_stress_written_with_accent_mark_matches(self) -> None:
         task = input_task("Поставьте ударение в слове: звонит", ["звонИт"])
@@ -258,7 +258,7 @@ class AnswerInText(unittest.TestCase):
     def test_part_of_word_and_numbers_are_fine(self) -> None:
         self.assertFalse(gen.answer_visible(input_task("Назовите столицу России.", ["сто"])))
         self.assertFalse(gen.answer_visible(input_task("Найдите 25 % от 100.", ["25"])))
-        clean = gen.attach_review(input_task("Столица Франции?", ["Париж"]), OK_REVIEW)
+        clean = gen.attach_review(input_task("Столица Франции? Ответ запишите одним словом.", ["Париж"]), OK_REVIEW)
         self.assertFalse(clean["needs_review"])
 
     def test_choice(self) -> None:
