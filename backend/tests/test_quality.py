@@ -32,7 +32,9 @@ def task(text: str, answers=None, *, options=None, correct=0, solution="реше
 
 
 def warning(item: dict, subject: str = "алгебра") -> str:
-    return gen.attach_review(item, OK_REVIEW, subject)["review"]["warning"]
+    """Все замечания — и серьёзные (жёлтые), и мелкие (серые)."""
+    review = gen.attach_review(item, OK_REVIEW, subject)["review"]
+    return "; ".join(part for part in (review["warning"], review["note"]) if part)
 
 
 class AutoChecks(unittest.TestCase):
@@ -136,7 +138,8 @@ class AutoChecks(unittest.TestCase):
     def test_missing_format_hint_is_added_when_unambiguous(self) -> None:
         geo = gen.add_format_hint(task("Самый большой океан Земли. Назовите этот океан", ["Тихий", "Тихий океан"]))
         self.assertTrue(geo["text"].endswith("Назовите этот океан. Ответ запишите одним словом."))
-        self.assertEqual(warning(geo, "география"), "")
+        self.assertFalse(gen.attach_review(geo, OK_REVIEW, "география")["needs_review"])
+        self.assertEqual(warning(geo, "география"), "подпись о формате ответа дописана сервером")
         number = gen.add_format_hint(task("Сколько будет $2^5$?", ["32"]))
         self.assertTrue(number["text"].endswith("? Ответ запишите целым числом."))
         decimal = gen.add_format_hint(task("Вычислите $5 : 2$.", ["2,5", "2.5"]))
@@ -182,7 +185,7 @@ class Prompts(unittest.TestCase):
                 "приведи фрагмент прямо в задании",
                 "вопросов на мнение",
                 "общеизвестные школьные",
-                "без черновых рассуждений",
+                "без черновиков и самопроверок",
                 "«Тихий» и «Тихий океан»",
                 "Ответ дайте в километрах, запишите только число.",
                 "найдите лишнее в перечне",

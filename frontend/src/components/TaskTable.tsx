@@ -22,6 +22,7 @@ import {
   cellBusy,
   cellMissing,
   countNeedsReview,
+  hasNote,
   needsReview,
   replaceTaskAt,
   reviewHint,
@@ -327,6 +328,7 @@ export default function TaskTable({
                               place?.order === order
                             const ready = task ? isReady(task) : false
                             const review = task ? needsReview(task) : false
+                            const note = task ? hasNote(task) : false
                             // Состояние клетки на сервере: пока задания нет,
                             // показываем, что с ней происходит.
                             const state = variant.aiCells?.[skillIndex]
@@ -347,6 +349,7 @@ export default function TaskTable({
                                   'cell' +
                                   (ready ? ' cell--ready' : ' cell--empty') +
                                   (review ? ' cell--review' : '') +
+                                  (note ? ' cell--note' : '') +
                                   (busy ? ' cell--busy' : '') +
                                   (missing ? ' cell--failed' : '') +
                                   (active ? ' cell--active' : '')
@@ -364,7 +367,7 @@ export default function TaskTable({
                                   setReplaceErrors([])
                                 }}
                                 title={
-                                  task && review
+                                  task && (review || note)
                                     ? `${task.text}\n${reviewHint(task)}`
                                     : missing && state
                                       ? `${state.error || 'Задание не составлено'}\nНажмите, чтобы заполнить вручную.`
@@ -413,7 +416,7 @@ export default function TaskTable({
           </div>
 
           {selected.review && (
-            <div className="reviewnote">
+            <div className={needsReview(selected) ? 'reviewnote' : 'reviewnote reviewnote--minor'}>
               {selected.review.status === 'mismatch' && (
                 <p>ИИ решил задание заново и получил другой ответ.</p>
               )}
@@ -425,9 +428,11 @@ export default function TaskTable({
                 className="btn btn--small btn--ghost"
                 onClick={() => updateTask(place, { review: null })}
               >
-                {selected.review.status === 'mismatch'
-                  ? 'Ответ верный — снять отметку'
-                  : 'Проверил(а) — снять отметку'}
+                {!needsReview(selected)
+                  ? 'Скрыть замечание'
+                  : selected.review.status === 'mismatch'
+                    ? 'Ответ верный — снять отметку'
+                    : 'Проверил(а) — снять отметку'}
               </button>
             </div>
           )}

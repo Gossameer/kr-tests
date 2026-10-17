@@ -136,6 +136,9 @@ os.environ.update(
     SMTP_HOST="",
     COOKIE_SECURE="false",
     TRUST_PROXY="false",
+    # Автоисправление тратит лишние запросы генерации — в старых тестах оно мешает
+    # считать запросы; его тесты включают его сами (tests/test_autofix.py).
+    AI_AUTOFIX_ATTEMPTS="0",
 )
 
 _db_ready = False

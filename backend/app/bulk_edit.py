@@ -33,15 +33,15 @@ from app.ai_generation import (
     VariantProblem,
     _live_jobs,
     _live_lock,
-    attach_review,
+    check_and_fix,
     check_pool,
+    gen_limits,
     chunk_size,
     format_rule,
     http_slots,
     is_stress_skill,
-    normalize_text,
+    task_key,
     parse_skill_answer,
-    self_check,
     stress_rule,
     subject_line,
     update_job,
@@ -104,7 +104,7 @@ def bulk_messages(request: dict, variant_numbers: list[int], previous_error: str
     parts += [
         "",
         "Требования:",
-        '- к КАЖДОМУ заданию краткое решение в "solution" (1–2 строки, для учителя);',
+        '- к КАЖДОМУ заданию краткое решение в "solution" (1–3 строки, для учителя);',
         *[f"- {rule};" for rule in QUALITY_RULES],
         f"- {NO_ANSWER_IN_TEXT};",
         f"- {SCHOOL_NOTATION}",
@@ -181,15 +181,19 @@ def _accept(run: JobRun, variant_no: int, tasks: list[dict]) -> None:
 
     def check(position: int, task: dict) -> None:
         try:
-            review = self_check(
-                run.ctx, run.request, task, run.cancel,
+            checked = check_and_fix(
+                run.ctx, run.request, run.request["skill_index"], task, run.cancel,
                 label=f"правка: вариант {variant_no}, задание {position + 1}",
             )
         except AIError as error:
             if error.fatal:
                 run.fail_fatal(error.message)
-            review = {"status": "unchecked", "generated": "", "checked": error.short}
-        checked = attach_review(task, review, run.request.get("subject", ""))
+            from app.ai_generation import attach_review
+
+            checked = attach_review(
+                task, {"status": "unchecked", "generated": "", "checked": error.short},
+                run.request.get("subject", ""),
+            )
 
         def store(job: dict) -> None:
             own = [item for item in job["result"]["items"] if item["variant_no"] == variant_no]
@@ -212,7 +216,7 @@ def _chunk(run: JobRun, variant_numbers: list[int]) -> None:
     problems: dict[int, str] = {}
     # При замене новые задания не должны совпадать с текущими.
     avoid = (
-        {normalize_text(task["text"]) for item in request["current"] for task in item["tasks"]}
+        {task_key(task) for item in request["current"] for task in item["tasks"]}
         if request["mode"] == "replace"
         else set()
     )
@@ -228,8 +232,8 @@ def _chunk(run: JobRun, variant_numbers: list[int]) -> None:
                     kind="generate",
                     model=settings.ai_model,
                     messages=bulk_messages(request, need, previous_error),
-                    max_tokens=settings.ai_gen_max_tokens,
-                    thinking=False if settings.ai_gen_thinking_off else None,
+                    max_tokens=gen_limits()[0],
+                    thinking=gen_limits()[1],
                     label=f"правка: варианты {variant_list(need)}" + (f", повтор {attempt}" if attempt else ""),
                 )
             ready, problems = parse_skill_answer(result.text, skill, request["skill_index"], need, avoid)

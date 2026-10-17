@@ -60,8 +60,17 @@ export type TaskReview = {
   status: 'ok' | 'mismatch' | 'unchecked'
   generated: string
   checked: string
-  /** Замечание к заданию: «ответ виден в условии» и т. п. Пусто — замечаний нет. */
+  /** Серьёзное (жёлтое): «ответ виден в условии» и т. п. Пусто — нет. */
   warning?: string
+  /** Мелкое (серое «замечание»): «подпись о формате дописана сервером» и т. п. */
+  note?: string
+  /**
+   * Требует ли проверки учителя (жёлтое, в счётчике). false — только серое замечание.
+   * У черновиков старой версии поля нет — тогда считаем, что требует.
+   */
+  flagged?: boolean
+  /** Сервис сам перегенерировал задание: сколько раз, получилось ли и почему. */
+  autofix?: { attempts: number; fixed: boolean; reason: string }
 }
 
 /** Один вариант проверочной работы. */
@@ -608,6 +617,8 @@ export type AiTask = {
     generated: string
     checked: string
     warning?: string
+    note?: string
+    autofix?: { attempts: number; fixed: boolean; reason: string }
   }
 }
 

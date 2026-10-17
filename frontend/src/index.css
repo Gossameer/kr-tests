@@ -2131,3 +2131,17 @@ code {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* ===================== Серые «замечания» (мелочи, без счётчика) ===================== */
+
+.cell--note {
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+
+.reviewnote--minor {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--muted);
+}

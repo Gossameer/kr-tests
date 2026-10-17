@@ -28,20 +28,30 @@ export function taskFromAi(task: AiTask): TaskDraft {
     solution: task.solution,
     // Задания без вопросов учителю неинтересны — храним только то, что стоит посмотреть:
     // расхождение, невыполненную самопроверку или замечание к самому заданию.
-    review: task.needs_review
-      ? {
-          status: task.review.status,
-          generated: task.review.generated,
-          checked: task.review.checked,
-          warning: task.review.warning ?? '',
-        }
-      : null,
+    // Жёлтое (требует проверки) и серое «замечание» храним; без замечаний — null.
+    review:
+      task.needs_review || task.review.note || task.review.autofix
+        ? {
+            status: task.review.status,
+            generated: task.review.generated,
+            checked: task.review.checked,
+            warning: task.review.warning ?? '',
+            note: task.review.note ?? '',
+            flagged: task.needs_review,
+            autofix: task.review.autofix,
+          }
+        : null,
   }
 }
 
-/** Требует ли задание взгляда учителя. */
+/** Требует ли задание взгляда учителя (жёлтое, в счётчике «Требуют проверки»). */
 export function needsReview(task: TaskDraft): boolean {
-  return Boolean(task.review)
+  return Boolean(task.review) && task.review?.flagged !== false
+}
+
+/** Только серое «замечание»: мелочь, в счётчик не входит. */
+export function hasNote(task: TaskDraft): boolean {
+  return Boolean(task.review) && task.review?.flagged === false
 }
 
 /** Что именно не так с заданием — строками, для карточки и подсказки. */
@@ -54,6 +64,17 @@ export function reviewLines(task: TaskDraft): string[] {
   if (review.warning) {
     // «ответ виден в условии; ввод не различает регистр…» → с заглавной буквы.
     lines.push(review.warning.charAt(0).toUpperCase() + review.warning.slice(1) + '.')
+  }
+  if (review.autofix?.fixed) {
+    lines.push(`Исправлено автоматически (было: ${review.autofix.reason}).`)
+  } else if (review.autofix) {
+    lines.push(
+      `Сервис пытался исправить задание сам (${review.autofix.attempts} раза), но не смог — посмотрите.`,
+    )
+  }
+  const notes = (review.note ?? '').split('; ').filter((note) => note !== '' && note !== 'исправлено автоматически')
+  if (notes.length > 0) {
+    lines.push(`Замечание: ${notes.join('; ')}.`)
   }
   if (review.status === 'mismatch') {
     lines.push(`При генерации: ${review.generated} · при проверке: ${review.checked}`)
