@@ -29,6 +29,8 @@ import {
 } from '../api'
 import CopyLink from '../components/CopyLink'
 import MathText from '../components/MathText'
+import ReviewSummary from '../components/ReviewSummary'
+import TaskReviewActions from '../components/TaskReviewActions'
 import type { AttemptDetail, AttemptRow, ClassLink, ResultsOverview, SkillStat } from '../types'
 import { usePageTitle } from '../lib/usePageTitle'
 
@@ -161,6 +163,8 @@ export default function ResultsPage() {
   // Фильтр по классу: пустая строка — показывать всех.
   const [classFilter, setClassFilter] = useState('')
   const [newClass, setNewClass] = useState('')
+  // Растёт после каждой правки задания: сводка «где ошиблись» перечитывается.
+  const [revision, setRevision] = useState(0)
 
   const load = useCallback(() => {
     fetchResults(testId)
@@ -187,6 +191,19 @@ export default function ResultsPage() {
   }, [loading, classFilter])
   // В умения и итоги идут только действующие попытки: аннулированные — нет.
   const counted = useMemo(() => shown.filter((attempt) => !attempt.annulled), [shown])
+
+  /** Правка задания пересчитала работы — перечитываем всё, что от неё зависит. */
+  function handleReviewed() {
+    setDetails({})
+    setDetailError('')
+    setRevision((value) => value + 1)
+    load()
+    if (openAttemptId !== null) {
+      fetchAttemptDetail(testId, openAttemptId)
+        .then((detail) => setDetails({ [openAttemptId]: detail }))
+        .catch(() => undefined)
+    }
+  }
 
   function handleRefresh() {
     setDetails({})
@@ -648,6 +665,14 @@ export default function ResultsPage() {
         </section>
       )}
 
+      {/* ------------------------- Где ошиблись ------------------------- */}
+      {data.attempts_count > 0 && (
+        <section className="card" id="review-summary">
+          <h2>Где ошиблись — и исправить задание</h2>
+          <ReviewSummary testId={testId} revision={revision} onChanged={handleReviewed} />
+        </section>
+      )}
+
       {/* ------------------------- Работы ------------------------- */}
       <section className="card">
         <h2>Работы</h2>
@@ -751,18 +776,24 @@ export default function ResultsPage() {
                             {detail !== undefined && (
                               <ol className="answers">
                                 {detail.items.map((item) => (
-                                  <li key={item.task_id} className="answer">
+                                  <li
+                                    key={item.task_id}
+                                    className={'answer' + (item.excluded ? ' answer--excluded' : '')}
+                                  >
                                     <p className="answer__question">
                                       <span
                                         className={
-                                          item.is_correct ? 'mark mark--ok' : 'mark mark--bad'
+                                          item.excluded ? 'mark' : item.is_correct ? 'mark mark--ok' : 'mark mark--bad'
                                         }
                                       >
-                                        {item.is_correct ? '✓' : '✗'}
+                                        {item.excluded ? '—' : item.is_correct ? '✓' : '✗'}
                                       </span>{' '}
                                       {item.position}. <MathText text={item.text} />
                                     </p>
-                                    <p className="answer__line hint">{item.skill_title}</p>
+                                    <p className="answer__line hint">
+                                      {item.skill_title}
+                                      {item.excluded && ' · не учитывается в оценке'}
+                                    </p>
                                     <p className="answer__line">
                                       Ответ ученика:{' '}
                                       {item.answered ? (
@@ -786,6 +817,14 @@ export default function ResultsPage() {
                                         Решение: <MathText text={item.solution} />
                                       </p>
                                     )}
+                                    <TaskReviewActions
+                                      testId={testId}
+                                      task={item}
+                                      studentAnswer={item.student_answer}
+                                      chosenOptionId={item.chosen_option_id}
+                                      isCorrect={item.is_correct}
+                                      onChanged={handleReviewed}
+                                    />
                                   </li>
                                 ))}
                               </ol>

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import ai_generation, db, mailer
 from app.config import get_settings
 from app.errors import migration_missing_handler, validation_error_handler
-from app.routers import accounts, admin, ai, auth, health, public, results, tests
+from app.routers import accounts, admin, ai, auth, health, public, results, task_review, tests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -134,6 +134,7 @@ app.include_router(tests.router)
 app.include_router(tests.my_router)
 app.include_router(public.router)
 app.include_router(results.router)
+app.include_router(task_review.router)
 
 
 @app.get("/", tags=["service"])

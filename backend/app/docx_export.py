@@ -272,14 +272,24 @@ def build_variants(test: dict, variants: dict[int, list[dict]]) -> bytes:
 
 
 def answer_text(task: dict) -> str:
-    """Ответ для ключа: «б) 2,5» у выбора, «3/5 или 0,6» у ввода."""
+    """
+    Ответ для ключа: «б) 2,5» у выбора, «3/5 или 0,6» у ввода.
+    Правки учителя после работы видны и здесь: «не учитывается», «засчитано всем»,
+    дополнительно засчитанные варианты.
+    """
+    if task.get("excluded"):
+        return "не учитывается"
     if task["answer_format"] == "choice":
-        for position, option in enumerate(task["options"]):
-            if position == task["correct"]:
-                letter = LETTERS[position] if position < len(LETTERS) else str(position + 1)
-                return f"{letter}) {option}"
-        return "—"
-    return " или ".join(task["accepted_answers"]) or "—"
+        right = [task["correct"], *task.get("also_correct", [])]
+        parts = [
+            f"{LETTERS[position] if position < len(LETTERS) else position + 1}) {option}"
+            for position, option in enumerate(task["options"])
+            if position in right
+        ]
+        text = " или ".join(parts) or "—"
+    else:
+        text = " или ".join(task["accepted_answers"]) or "—"
+    return text + (" (засчитано всем)" if task.get("credit_all") else "")
 
 
 def _cell(cell, text: str, *, bold: bool = False, center: bool = False, size: float = 11) -> None:

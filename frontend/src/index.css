@@ -1959,3 +1959,105 @@ code {
   margin: var(--gap-m) 0 0;
   font-size: 1.05rem;
 }
+
+
+/* ===================== Исправление проведённой работы ===================== */
+
+.reviewactions {
+  margin-top: var(--gap-xs);
+  padding-top: var(--gap-xs);
+  border-top: 1px dashed var(--border);
+}
+
+.reviewactions__state,
+.reviewactions__extra {
+  margin: 0 0 var(--gap-xs);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.chip--small {
+  padding: 2px 8px;
+  font-size: 0.85rem;
+}
+
+.linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--brand);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+.answer--excluded .answer__question {
+  color: var(--muted);
+}
+
+.reviewskill h3 {
+  margin: var(--gap-l) 0 var(--gap-s);
+}
+
+.reviewtasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--gap-m);
+}
+
+.reviewtask {
+  padding: var(--gap-s) var(--gap-m);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.reviewtask__head {
+  margin: 0 0 4px;
+  display: flex;
+  gap: var(--gap-s);
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.reviewtask__place {
+  font-weight: 600;
+}
+
+.reviewtask__wrong {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.reviewtask__text {
+  margin: 0 0 4px;
+}
+
+.wronglist {
+  list-style: none;
+  margin: var(--gap-xs) 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.wronglist li {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  flex-wrap: wrap;
+}
+
+.wronglist__answer {
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--bad-soft);
+}
+
+.reviewlog {
+  margin: var(--gap-s) 0 0;
+  padding-left: 1.2em;
+}

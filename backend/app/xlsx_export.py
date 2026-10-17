@@ -159,8 +159,11 @@ def build_results_xlsx(
         marks = task_marks.get(attempt["id"], {})
         sheet.append(
             [attempt["student_class"], attempt["student_name"], attempt["variant_no"]]
-            # Задание без ответа — 0: оно не выполнено.
-            + [1 if marks.get(number) else 0 for number in range(1, tasks_count + 1)]
+            # Задание без ответа — 0: оно не выполнено. Исключённое из оценки — «—».
+            + [
+                "—" if number in marks and marks[number] is None else 1 if marks.get(number) else 0
+                for number in range(1, tasks_count + 1)
+            ]
             + [
                 attempt["score"] or 0,
                 attempt["max_score"] or 0,
@@ -241,6 +244,10 @@ def build_results_xlsx(
         else:
             correct_answer = " / ".join(task["accepted_answers"])
             format_name = "ввод"
+        if task.get("excluded"):
+            format_name += ", не учитывается"
+        elif task.get("credit_all"):
+            format_name += ", засчитано всем"
         tasks_sheet.append(
             [
                 task["variant_no"],

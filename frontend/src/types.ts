@@ -182,6 +182,8 @@ export type TaskResult = {
   position: number
   answered: boolean
   is_correct: boolean
+  /** Учитель исключил задание из оценки. */
+  excluded?: boolean
 }
 
 /** Ответ на сдачу работы. */
@@ -289,6 +291,63 @@ export type AttemptDetailItem = {
   solution: string
   answered: boolean
   is_correct: boolean
+  /** Правки учителя после работы. */
+  excluded: boolean
+  credit_all: boolean
+  extra_answers: string[]
+  accepted_option_ids: number[]
+  options: ReviewOption[]
+  chosen_option_id: number | null
+}
+
+/** Вариант ответа задания с выбором — для правок после работы. */
+export type ReviewOption = {
+  id: number
+  text: string
+  is_correct: boolean
+  /** Учитель засчитал и этот вариант. */
+  accepted?: boolean
+}
+
+export type ReviewAction =
+  | 'add_answer'
+  | 'remove_answer'
+  | 'accept_option'
+  | 'unaccept_option'
+  | 'credit_all'
+  | 'uncredit_all'
+  | 'exclude'
+  | 'include'
+
+/** Строка сводки «где ошиблись» — одно задание одного варианта. */
+export type TaskReviewRow = {
+  task_id: number
+  variant_no: number
+  position: number
+  skill_id: number
+  skill_position: number
+  skill_title: string
+  text: string
+  answer_format: AnswerFormat
+  accepted_answers: string[]
+  extra_answers: string[]
+  options: ReviewOption[]
+  credit_all: boolean
+  excluded: boolean
+  answered: number
+  wrong: number
+  /** Частые неверные ответы. Пустой answer — «не ответил». */
+  top_wrong: { answer: string; count: number; option_id: number | null }[]
+}
+
+export type ReviewLogEntry = {
+  id: number
+  created_at: string
+  user_name: string
+  action: ReviewAction
+  action_name: string
+  detail: string
+  task_id: number | null
 }
 
 /** Ответ GET /api/results/{token}/attempts/{id} */

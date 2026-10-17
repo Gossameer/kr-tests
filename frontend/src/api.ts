@@ -4,6 +4,9 @@
  */
 
 import type {
+  ReviewAction,
+  ReviewLogEntry,
+  TaskReviewRow,
   UserRole,
   AdminLogEntry,
   ClassLink,
@@ -235,6 +238,32 @@ export function printFileUrl(
   kind: 'print.zip' | 'variants.docx' | 'key.docx',
 ): string {
   return `${API_URL}/api/tests/${testId}/print/${kind}`
+}
+
+/**
+ * POST /api/tests/{id}/tasks/{taskId}/review — правка задания после работы
+ * (добавить ответ, засчитать всем, исключить и отмена). Сервер сразу
+ * перепроверяет все сданные работы.
+ */
+export async function reviewTask(
+  testId: number,
+  taskId: number,
+  body: { action: ReviewAction; answer?: string; option_id?: number },
+): Promise<void> {
+  const response = await postJson(`${API_URL}/api/tests/${testId}/tasks/${taskId}/review`, body)
+  if (!response.ok) {
+    throw new Error(await extractError(response))
+  }
+}
+
+/** GET /api/tests/{id}/tasks-review — сводка «где ошиблись» по всем заданиям. */
+export async function fetchTasksReview(testId: number): Promise<{ tasks: TaskReviewRow[] }> {
+  return parse<{ tasks: TaskReviewRow[] }>(await request(`${API_URL}/api/tests/${testId}/tasks-review`))
+}
+
+/** GET /api/tests/{id}/review-log — журнал правок заданий. */
+export async function fetchReviewLog(testId: number): Promise<ReviewLogEntry[]> {
+  return parse<ReviewLogEntry[]>(await request(`${API_URL}/api/tests/${testId}/review-log`))
 }
 
 /** PATCH /api/tests/{id} — открыть или закрыть приём работ. */

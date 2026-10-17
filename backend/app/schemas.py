@@ -416,6 +416,8 @@ class TaskResult(BaseModel):
     position: int
     answered: bool
     is_correct: bool
+    # Учитель исключил задание из оценки: в баллы и максимум оно не входит.
+    excluded: bool = False
 
 
 class AttemptResultOut(BaseModel):
@@ -508,6 +510,15 @@ class AttemptDetailItem(BaseModel):
     solution: str
     answered: bool
     is_correct: bool
+    # Правки учителя после работы (миграция 011).
+    excluded: bool = False
+    credit_all: bool = False
+    # Ответы, добавленные учителем (для ввода), и id засчитанных им вариантов.
+    extra_answers: list[str] = []
+    accepted_option_ids: list[int] = []
+    # Варианты ответа задания с выбором — чтобы засчитать один из них прямо из разбора.
+    options: list[dict] = []
+    chosen_option_id: int | None = None
 
 
 class AttemptDetail(BaseModel):

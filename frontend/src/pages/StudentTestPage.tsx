@@ -322,12 +322,22 @@ export default function StudentTestPage() {
           {result.results.map((item, index) => (
             <li key={item.task_id} className="question">
               <p className="question__text">
-                <span className={item.is_correct ? 'mark mark--ok' : 'mark mark--bad'}>
-                  {item.is_correct ? '✓' : '✗'}
-                </span>{' '}
+                {item.excluded ? (
+                  <span className="mark" title="Учитель исключил задание из оценки">
+                    —
+                  </span>
+                ) : (
+                  <span className={item.is_correct ? 'mark mark--ok' : 'mark mark--bad'}>
+                    {item.is_correct ? '✓' : '✗'}
+                  </span>
+                )}{' '}
                 {index + 1}. <MathText text={textById.get(item.task_id) ?? `Задание ${item.position}`} />
               </p>
-              {!item.answered && <p className="muted">Ответ не дан</p>}
+              {item.excluded ? (
+                <p className="muted">Не учитывается в оценке</p>
+              ) : (
+                !item.answered && <p className="muted">Ответ не дан</p>
+              )}
             </li>
           ))}
         </ol>

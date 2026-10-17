@@ -30,7 +30,7 @@ from fastapi import APIRouter, HTTPException, Path, status
 from psycopg import errors as pg_errors
 
 from app import db
-from app.answers import check_input_answer
+from app.rescoring import is_correct as verdict
 from app.names import name_key
 from app.schemas import (
     AttemptCheckIn,
@@ -521,7 +521,8 @@ def submit_attempt(
         # для проверки и остаются внутри функции.
         task_rows = conn.execute(
             """
-            SELECT id, position, answer_format, accepted_answers
+            SELECT id, position, answer_format, accepted_answers,
+                   extra_answers, extra_option_ids, credit_all, excluded
             FROM tasks
             WHERE test_id = %s AND variant_no = %s
             ORDER BY position, id
@@ -575,24 +576,25 @@ def submit_attempt(
         results = []
         answer_rows: list[tuple[int, int | None, str | None, bool]] = []
 
+        # Правки учителя (добавленный ответ, «засчитать всем», «исключить»)
+        # действуют и на работы, сданные после них.
+        counted_tasks = [task for task in task_rows if not task["excluded"]]
+
         for task in task_rows:
             task_id = task["id"]
             chosen_option: int | None = None
             typed_text: str | None = None
-            is_correct = False
 
             if task["answer_format"] == "choice":
                 chosen_option = payload.choices.get(task_id)
-                is_correct = chosen_option in correct_options
                 answered = chosen_option is not None
             else:
                 raw = payload.inputs.get(task_id)
                 typed_text = raw.strip() if raw is not None else None
                 answered = bool(typed_text)
-                if answered and typed_text is not None:
-                    is_correct = check_input_answer(typed_text, task["accepted_answers"])
+            is_correct = verdict(task, chosen_option, typed_text, correct_options)
 
-            if is_correct:
+            if is_correct and not task["excluded"]:
                 score += 1
 
             results.append(
@@ -601,6 +603,7 @@ def submit_attempt(
                     "position": task["position"],
                     "answered": answered,
                     "is_correct": is_correct,
+                    "excluded": task["excluded"],
                 }
             )
             answer_rows.append((task_id, chosen_option, typed_text, is_correct))
@@ -627,7 +630,7 @@ def submit_attempt(
                     SET score = %s, max_score = %s, finished_at = now()
                     WHERE id = %s
                     """,
-                    (score, len(task_rows), attempt_id),
+                    (score, len(counted_tasks), attempt_id),
                 )
         except pg_errors.UniqueViolation as exc:
             # Ответы за эту попытку уже записаны — работу успели сдать.
@@ -649,7 +652,7 @@ def submit_attempt(
         attempt_row["student_class"],
         variant_no,
         score,
-        len(task_rows),
+        len(counted_tasks),
     )
 
     return AttemptResultOut(
@@ -658,7 +661,7 @@ def submit_attempt(
         student_name=attempt_row["student_name"],
         student_class=attempt_row["student_class"],
         score=score,
-        max_score=len(task_rows),
+        max_score=len(counted_tasks),
         results=results,
     )
 

@@ -572,7 +572,7 @@ def build_stats(user: dict, days: int, subject: str, student_class: str, test_id
             JOIN skills s   ON s.id = tk.skill_id
             JOIN tests t    ON t.id = a.test_id
             JOIN users u    ON u.id = t.teacher_id
-            WHERE {condition}
+            WHERE {condition} AND NOT tk.excluded
             GROUP BY s.id, s.title, t.subject, t.title, u.full_name, a.student_class
             HAVING count(*) > 0
             ORDER BY percent, answers_count DESC

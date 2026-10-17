@@ -155,7 +155,7 @@ def load_skill_matrix(conn, test_id: int) -> dict[tuple[int, int], dict]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s AND att.annulled_at IS NULL
+        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT t.excluded
         GROUP BY ans.attempt_id, t.skill_id
         """,
         (test_id,),
@@ -180,7 +180,7 @@ def load_skill_stats(conn, test_id: int, skills: list[dict]) -> list[dict]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s AND att.annulled_at IS NULL
+        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT t.excluded
         GROUP BY t.skill_id
         """,
         (test_id,),
@@ -287,6 +287,11 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
             t.answer_format     AS answer_format,
             t.accepted_answers  AS accepted_answers,
             t.solution          AS solution,
+            t.extra_answers     AS extra_answers,
+            t.extra_option_ids  AS extra_option_ids,
+            t.credit_all        AS credit_all,
+            t.excluded          AS excluded,
+            ans.option_id       AS chosen_option_id,
             s.title             AS skill_title,
             chosen.text         AS chosen_text,
             right_option.text   AS right_option_text,
@@ -305,6 +310,19 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
         (attempt_id, test_id, variant_no),
     ).fetchall()
 
+    options_by_task: dict[int, list[dict]] = {}
+    if rows:
+        for option in conn.execute(
+            """
+            SELECT id, task_id, text, is_correct FROM task_options
+            WHERE task_id = ANY(%s) ORDER BY position, id
+            """,
+            ([row["task_id"] for row in rows],),
+        ).fetchall():
+            options_by_task.setdefault(option["task_id"], []).append(
+                {"id": option["id"], "text": option["text"], "is_correct": option["is_correct"]}
+            )
+
     items = []
     for row in rows:
         if row["answer_format"] == "choice":
@@ -312,8 +330,9 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
             correct_answer = row["right_option_text"] or ""
         else:
             student_answer = row["answer_text"]
-            # Допустимых ответов может быть несколько — показываем все.
-            correct_answer = " / ".join(row["accepted_answers"])
+            # Допустимых ответов может быть несколько — показываем все,
+            # вместе с добавленными учителем после работы.
+            correct_answer = " / ".join(row["accepted_answers"] + row["extra_answers"])
 
         items.append(
             {
@@ -327,6 +346,12 @@ def load_attempt_items(conn, attempt_id: int, test_id: int, variant_no: int) -> 
                 "solution": row["solution"],
                 "answered": bool(student_answer),
                 "is_correct": row["is_correct"],
+                "excluded": row["excluded"],
+                "credit_all": row["credit_all"],
+                "extra_answers": row["extra_answers"],
+                "accepted_option_ids": row["extra_option_ids"],
+                "options": options_by_task.get(row["task_id"], []),
+                "chosen_option_id": row["chosen_option_id"],
             }
         )
 
@@ -386,11 +411,15 @@ def get_attempt_detail(
     )
 
 
-def load_task_marks(conn, test_id: int) -> dict[int, dict[int, bool]]:
-    """{id попытки: {номер задания в варианте: верно?}} — баллы по заданиям для Excel."""
+def load_task_marks(conn, test_id: int) -> dict[int, dict[int, bool | None]]:
+    """
+    {id попытки: {номер задания в варианте: верно?}} — баллы по заданиям для Excel.
+    None — задание исключено из оценки.
+    """
     rows = conn.execute(
         """
-        SELECT ans.attempt_id, t.position, ans.is_correct
+        SELECT ans.attempt_id, t.position,
+               CASE WHEN t.excluded THEN NULL ELSE ans.is_correct END AS is_correct
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
@@ -398,7 +427,7 @@ def load_task_marks(conn, test_id: int) -> dict[int, dict[int, bool]]:
         """,
         (test_id,),
     ).fetchall()
-    marks: dict[int, dict[int, bool]] = {}
+    marks: dict[int, dict[int, bool | None]] = {}
     for row in rows:
         marks.setdefault(row["attempt_id"], {})[row["position"]] = row["is_correct"]
     return marks
@@ -412,7 +441,9 @@ def load_print_variants(conn, test_id: int) -> dict[int, list[dict]]:
     task_rows = conn.execute(
         """
         SELECT t.id, t.variant_no, t.position, t.text, t.answer_format,
-               t.accepted_answers, s.title AS skill_title, s.position AS skill_position
+               t.accepted_answers || t.extra_answers AS accepted_answers,
+               t.extra_option_ids, t.credit_all, t.excluded,
+               s.title AS skill_title, s.position AS skill_position
         FROM tasks t
         JOIN skills s ON s.id = t.skill_id
         WHERE t.test_id = %s
@@ -422,7 +453,7 @@ def load_print_variants(conn, test_id: int) -> dict[int, list[dict]]:
     ).fetchall()
     option_rows = conn.execute(
         """
-        SELECT o.task_id, o.text, o.is_correct
+        SELECT o.id, o.task_id, o.text, o.is_correct
         FROM task_options o
         JOIN tasks t ON t.id = o.task_id
         WHERE t.test_id = %s
@@ -448,6 +479,12 @@ def load_print_variants(conn, test_id: int) -> dict[int, list[dict]]:
                 ),
                 "accepted_answers": task["accepted_answers"],
                 "skill_title": f"{task['skill_position']}. {task['skill_title']}",
+                # Правки после работы — для ключа ответов.
+                "also_correct": [
+                    index for index, option in enumerate(own) if option["id"] in task["extra_option_ids"]
+                ],
+                "credit_all": task["credit_all"],
+                "excluded": task["excluded"],
             }
         )
     return variants
@@ -541,7 +578,8 @@ def export_results(
         task_rows = conn.execute(
             """
             SELECT t.id, t.variant_no, t.position, t.text, t.answer_format,
-                   t.accepted_answers, t.solution, s.title AS skill_title,
+                   t.accepted_answers || t.extra_answers AS accepted_answers,
+                   t.solution, s.title AS skill_title, t.excluded, t.credit_all,
                    right_option.text AS right_option_text,
                    count(ans.id)                          AS answered,
                    count(ans.id) FILTER (WHERE ans.is_correct) AS correct
@@ -557,7 +595,8 @@ def export_results(
             ) ans ON ans.task_id = t.id
             WHERE t.test_id = %s
             GROUP BY t.id, t.variant_no, t.position, t.text, t.answer_format,
-                     t.accepted_answers, t.solution, s.title, right_option.text
+                     t.accepted_answers, t.extra_answers, t.solution, s.title,
+                     t.excluded, t.credit_all, right_option.text
             ORDER BY t.variant_no, t.position, t.id
             """,
             (test_id,),
