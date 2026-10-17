@@ -32,6 +32,7 @@ MAX_TASK_LEN = 3000
 MAX_OPTIONS = 10
 MAX_OPTION_LEN = 500
 MAX_ANSWERS = 10
+MAX_HINT_LEN = 1000
 MAX_ANSWER_LEN = 200
 MAX_SOLUTION_LEN = 3000
 MAX_STUDENT_NAME_LEN = 120
@@ -56,6 +57,17 @@ class SkillIn(BaseModel):
     tasks_per_variant: int = 1
     # По умолчанию «ввод ответа»: так ученик не угадывает из четырёх.
     answer_format: AnswerFormat = "input"
+    # «Уточнение для ИИ»: пожелание учителя к заданиям умения. Учитывается при
+    # генерации, догенерации и правках во всех вариантах.
+    ai_hint: str = ""
+
+    @field_validator("ai_hint")
+    @classmethod
+    def check_hint(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) > MAX_HINT_LEN:
+            raise ValueError(f"уточнение для ИИ длиннее {MAX_HINT_LEN} символов")
+        return cleaned
 
     @field_validator("title")
     @classmethod

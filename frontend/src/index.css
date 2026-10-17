@@ -2061,3 +2061,73 @@ code {
   margin: var(--gap-s) 0 0;
   padding-left: 1.2em;
 }
+
+
+/* ===================== Правка во всех вариантах ===================== */
+
+.matrix__bulk {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
+.skillhint {
+  margin-top: var(--gap-s);
+}
+
+.bulkpanel {
+  margin-top: var(--gap-l);
+  border-color: var(--brand);
+}
+
+.bulkitems {
+  list-style: none;
+  margin: var(--gap-m) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--gap-m);
+}
+
+.bulkitem {
+  padding: var(--gap-s) var(--gap-m);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.bulkitem--accepted {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.bulkitem--rejected {
+  opacity: 0.6;
+}
+
+.bulkitem__place {
+  margin: 0 0 var(--gap-xs);
+  font-weight: 600;
+  display: flex;
+  gap: var(--gap-xs);
+  align-items: center;
+}
+
+.bulkitem__cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-m);
+}
+
+.bulkitem__cols p {
+  margin: 0 0 4px;
+}
+
+.bulkitem__options {
+  margin: 0 0 4px;
+  padding-left: 1.4em;
+}
+
+@media (max-width: 700px) {
+  .bulkitem__cols {
+    grid-template-columns: 1fr;
+  }
+}

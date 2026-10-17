@@ -35,7 +35,9 @@ import { SNIPPET_BUTTONS, hasUnclosedDollar, insertSnippet, shortenText } from '
 import type { SnippetKind } from '../lib/formula'
 import { parseSingleTask, taskProblem } from '../lib/parseTestJson'
 import type { AiCellStatus, SkillDraft, TaskDraft, VariantDraft } from '../types'
+import BulkEditPanel from './BulkEditPanel'
 import MathText from './MathText'
+import type { AiContext } from '../api'
 
 type Props = {
   skills: SkillDraft[]
@@ -48,6 +50,15 @@ type Props = {
   onRegenerate?: (place: TaskPlace) => Promise<void>
   /** Учитель уже нажимал «Опубликовать» — показываем все ошибки, даже в нетронутых полях. */
   showErrors?: boolean
+  /**
+   * «Изменить во всех вариантах» (нужна генерация на сервере): что знает ИИ о работе
+   * и как сохранить пожелание в умении.
+   */
+  bulk?: {
+    context: AiContext
+    variantsCount: number
+    onHint: (skillIndex: number, hint: string) => void
+  }
 }
 
 /** Где именно лежит задание: вариант, умение и номер задания внутри умения. */
@@ -77,7 +88,16 @@ export default function TaskTable({
   aiEnabled = false,
   onRegenerate,
   showErrors = false,
+  bulk,
 }: Props) {
+  // Открытая панель «Изменить во всех вариантах»: умение и (если задано) позиция.
+  const [bulkTarget, setBulkTarget] = useState<{ skillIndex: number; order: number | null } | null>(null)
+
+  function openBulk(skillIndex: number, order: number | null) {
+    setBulkTarget({ skillIndex, order })
+    window.setTimeout(() => document.getElementById('bulk-panel')?.scrollIntoView({ behavior: 'smooth' }), 50)
+  }
+
   const [place, setPlace] = useState<Place | null>(null)
   const [replaceRaw, setReplaceRaw] = useState('')
   const [replaceErrors, setReplaceErrors] = useState<string[]>([])
@@ -282,6 +302,16 @@ export default function TaskTable({
                       {skill.answerFormat === 'choice' ? 'выбор' : 'ввод'} ·{' '}
                       {skill.tasksPerVariant} шт.
                     </span>
+                    {bulk && (
+                      <button
+                        type="button"
+                        className="linkbtn matrix__bulk"
+                        onClick={() => openBulk(skillIndex, null)}
+                        title="ИИ поправит или заменит задания этого умения во всех вариантах"
+                      >
+                        Изменить во всех вариантах
+                      </button>
+                    )}
                   </td>
 
                   {variants.map((variant) => {
@@ -625,6 +655,24 @@ export default function TaskTable({
                 <span className="hint">то же умение и формат ответа, другие числа</span>
               </div>
             )}
+            {bulk && (
+              <div className="row row--tight">
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--small"
+                  onClick={() =>
+                    openBulk(place.skillIndex, selectedSkill.tasksPerVariant > 1 ? place.order : null)
+                  }
+                >
+                  Изменить во всех вариантах
+                </button>
+                <span className="hint">
+                  такое же задание
+                  {selectedSkill.tasksPerVariant > 1 ? ` (№ ${place.order + 1} этого умения)` : ''} во
+                  всех вариантах — по вашему замечанию
+                </span>
+              </div>
+            )}
             <div className="row row--tight">
               <button type="button" className="btn btn--ghost" onClick={handleCopyPrompt}>
                 Скопировать промт для замены
@@ -665,6 +713,33 @@ export default function TaskTable({
             )}
           </div>
         </section>
+      )}
+      {/* ------------------------- Правка во всех вариантах ------------------------- */}
+      {bulk && bulkTarget && (
+        <BulkEditPanel
+          key={`${bulkTarget.skillIndex}:${bulkTarget.order}`}
+          context={bulk.context}
+          variantsCount={bulk.variantsCount}
+          skillIndex={bulkTarget.skillIndex}
+          order={bulkTarget.order}
+          variants={variants}
+          onHint={bulk.onHint}
+          onAccept={(accepted) =>
+            // Меняем только эти задания; правки учителя в других не трогаем.
+            onChange(
+              accepted.reduce(
+                (current, item) =>
+                  replaceTaskAt(
+                    current,
+                    { variantNo: item.variantNo, skillIndex: bulkTarget.skillIndex, order: item.order },
+                    item.task,
+                  ),
+                variants,
+              ),
+            )
+          }
+          onClose={() => setBulkTarget(null)}
+        />
       )}
     </div>
   )

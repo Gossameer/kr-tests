@@ -7,6 +7,8 @@
     POST /api/ai/jobs/{id}/resume                    — догенерировать недостающее
     POST /api/ai/jobs/{id}/variants/{no}/retry       — то же, но для одного варианта
     POST /api/ai/task-jobs                           — перегенерировать одно задание
+    POST /api/ai/bulk-jobs                           — поправить или заменить задания
+                                                       умения во всех вариантах
 
     GET  /api/admin/ai                               — расход и лимит (администратор)
     PUT  /api/admin/ai                               — сменить дневной лимит
@@ -23,7 +25,9 @@ from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
-from app import ai_generation, db
+from typing import Literal
+
+from app import ai_generation, bulk_edit, db
 from app.auth import db_unavailable, require_admin, require_user
 from app.config import get_settings
 from app.schemas import MAX_SKILLS, MAX_TASK_LEN, MAX_TITLE_LEN, MAX_VARIANTS, SkillIn
@@ -87,6 +91,41 @@ class TaskJobCreate(GenerationContext):
     def trim_avoid(cls, value: list[str]) -> list[str]:
         cleaned = [text.strip()[:MAX_TASK_LEN] for text in value if text.strip()]
         return cleaned[-MAX_AVOID_TEXTS:]
+
+
+class BulkTask(BaseModel):
+    """Текущее задание варианта (как в таблице проверки)."""
+
+    text: str = Field(default="", max_length=MAX_TASK_LEN)
+    answer_format: Literal["input", "choice"] = "input"
+    options: list[str] = []
+    correct: int | None = None
+    accepted_answers: list[str] = []
+    solution: str = ""
+
+
+class BulkVariant(BaseModel):
+    variant_no: int = Field(ge=1, le=MAX_VARIANTS)
+    tasks: list[BulkTask]
+
+
+class BulkJobCreate(GenerationContext):
+    variants_count: int = Field(ge=1, le=MAX_VARIANTS)
+    skill_index: int = Field(ge=1)
+    # Номер задания внутри умения (с нуля) — правка одной позиции во всех
+    # вариантах. None — все задания умения.
+    order: int | None = Field(default=None, ge=0)
+    mode: Literal["fix", "replace"]
+    wish: str = Field(min_length=3, max_length=1000)
+    current: list[BulkVariant]
+
+    @field_validator("wish")
+    @classmethod
+    def trim_wish(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if len(cleaned) < 3:
+            raise ValueError("напишите, что не так, хотя бы парой слов")
+        return cleaned
 
 
 class LimitUpdate(BaseModel):
@@ -386,6 +425,70 @@ def create_task_job(payload: TaskJobCreate, user: dict = Depends(require_user)) 
         raise migration_missing() from exc
 
     ai_generation.start_task_job(row["id"], user["id"])
+    return {"job_id": row["id"]}
+
+
+@router.post(
+    "/bulk-jobs",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Поправить или заменить задания умения во всех вариантах",
+)
+def create_bulk_job(payload: BulkJobCreate, user: dict = Depends(require_user)) -> dict:
+    """
+    ИИ обрабатывает задания одного умения во всех вариантах (параллельно, с
+    самопроверкой и автопроверками). Результат — «было → стало», принимает
+    учитель на странице. В дневной лимит не входит: это доводка работы.
+    """
+    if not get_settings().ai_enabled:
+        raise ai_not_configured()
+    if payload.skill_index > len(payload.skills):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Умения №{payload.skill_index} нет в списке.",
+        )
+    current = [variant for variant in payload.current if any(task.text.strip() for task in variant.tasks)]
+    if not current:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="В таблице нет заданий этого умения — исправлять нечего.",
+        )
+
+    pool = get_pool()
+    request = request_dict(
+        payload,
+        variants_count=payload.variants_count,
+        skill_index=payload.skill_index,
+        order=payload.order,
+        mode=payload.mode,
+        wish=payload.wish,
+        current=[variant.model_dump() for variant in current],
+    )
+    try:
+        with pool.connection() as conn:
+            if daily_limit(conn) <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Генерация через ИИ отключена администратором.",
+                )
+            row = conn.execute(
+                """
+                INSERT INTO ai_jobs (teacher_id, kind, status, request, result)
+                VALUES (%s, 'bulk', 'running', %s, %s)
+                RETURNING id
+                """,
+                (user["id"], Jsonb(request), Jsonb(bulk_edit.initial_items(request))),
+            ).fetchone()
+    except (pg_errors.UndefinedTable, pg_errors.CheckViolation) as exc:
+        raise migration_missing() from exc
+
+    logger.info(
+        "Учитель %s: правка во всех вариантах (%s), умение %s, вариантов %s",
+        user["email"],
+        payload.mode,
+        payload.skill_index,
+        len(current),
+    )
+    bulk_edit.start_bulk_job(row["id"], user["id"])
     return {"job_id": row["id"]}
 
 

@@ -4,6 +4,8 @@
  */
 
 import type {
+  BulkTaskIn,
+  TestDraft,
   ReviewAction,
   ReviewLogEntry,
   TaskReviewRow,
@@ -476,7 +478,54 @@ function aiSkills(skills: SkillDraft[]) {
     title: skill.title.trim(),
     tasks_per_variant: skill.tasksPerVariant,
     answer_format: skill.answerFormat,
+    ai_hint: (skill.aiHint ?? '').trim(),
   }))
+}
+
+/**
+ * POST /api/ai/bulk-jobs — поправить («fix») или заменить («replace») задания
+ * умения во всех вариантах. Результат — в items задания ИИ.
+ */
+export async function startBulkJob(
+  context: AiContext,
+  params: {
+    variantsCount: number
+    skillIndex: number
+    order: number | null
+    mode: 'fix' | 'replace'
+    wish: string
+    current: { variant_no: number; tasks: BulkTaskIn[] }[]
+  },
+): Promise<{ job_id: number }> {
+  return parse<{ job_id: number }>(
+    await postJson(`${API_URL}/api/ai/bulk-jobs`, {
+      subject: context.subject,
+      topic: context.topic,
+      grade: context.grade,
+      skills: aiSkills(context.skills),
+      variants_count: params.variantsCount,
+      skill_index: params.skillIndex,
+      order: params.order,
+      mode: params.mode,
+      wish: params.wish,
+      current: params.current,
+    }),
+  )
+}
+
+/** GET /api/tests/{id}/draft — работа как черновик: для копии и для правки. */
+export async function fetchTestDraft(testId: number): Promise<TestDraft> {
+  return parse<TestDraft>(await request(`${API_URL}/api/tests/${testId}/draft`))
+}
+
+/** PUT /api/tests/{id} — заменить задания работы, пока её никто не писал. */
+export async function updateTest(testId: number, payload: TestCreatePayload): Promise<CreatedTest> {
+  const response = await request(`${API_URL}/api/tests/${testId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return parse<CreatedTest>(response)
 }
 
 /** GET /api/ai/status — включена ли генерация и сколько осталось на сегодня. */

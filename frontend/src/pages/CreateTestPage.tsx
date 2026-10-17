@@ -16,9 +16,11 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import {
   createTest,
+  fetchTestDraft,
+  updateTest,
   fetchAiJob,
   fetchAiStatus,
   resumeAiJob,
@@ -86,9 +88,18 @@ function buildEmptyVariants(skills: SkillDraft[], variantsCount: number): Varian
 }
 
 export default function CreateTestPage() {
+  // /create?copy=12 — копия работы 12; /create?edit=12 — правка работы 12, пока её не писали.
+  const [searchParams] = useSearchParams()
+  const sourceId = Number(searchParams.get('copy') ?? searchParams.get('edit') ?? 0)
+  const editing = searchParams.get('edit') !== null
+  // Работа, которую меняем (а не создаём новую). null — новая работа.
+  const [editTestId, setEditTestId] = useState<number | null>(null)
+  const [sourceError, setSourceError] = useState('')
+  const [sourceLoading, setSourceLoading] = useState(sourceId > 0)
+
   // Если на этой странице шла генерация через ИИ, черновик лежит в браузере:
-  // возвращаем его, а прогресс подтянется с сервера.
-  const [draft] = useState(loadDraft)
+  // возвращаем его, а прогресс подтянется с сервера. Копия и правка — свои данные.
+  const [draft] = useState(() => (sourceId > 0 ? null : loadDraft()))
 
   // --- Шапка ---
   // ФИО учителя больше не спрашиваем: сервер берёт его из учётной записи.
@@ -169,6 +180,56 @@ export default function CreateTestPage() {
   const aiLeft = aiStatus ? Math.max(0, aiStatus.daily_limit - aiStatus.used_today) : 0
   const jobRunning = job?.status === 'running' || (jobId !== null && job === null)
   const aiContext = { subject: subject.trim(), topic: topic.trim(), grade: grade.trim(), skills }
+
+  // Копия или правка работы: загружаем её с сервера в форму.
+  useEffect(() => {
+    if (sourceId <= 0) {
+      return
+    }
+    fetchTestDraft(sourceId)
+      .then((source) => {
+        if (editing && source.has_attempts) {
+          setSourceError(
+            'Работу уже писали: исправьте результаты в разборе (добавить ответ / засчитать / ' +
+              'исключить) или сделайте копию работы.',
+          )
+          return
+        }
+        setEditTestId(editing ? source.id : null)
+        setTitle(editing ? source.title : `${source.title} (копия)`)
+        setSubject(source.subject)
+        setClassesRaw(source.classes.join(', '))
+        setVariantsCount(source.variants_count)
+        setShuffle(source.shuffle)
+        setSkills(
+          source.skills.map((skill) => ({
+            title: skill.title,
+            tasksPerVariant: skill.tasks_per_variant,
+            answerFormat: skill.answer_format,
+            aiHint: skill.ai_hint,
+          })),
+        )
+        setVariants(
+          source.variants.map((variant) => ({
+            variantNo: variant.variant_no,
+            tasks: variant.tasks.map((task) => ({
+              skillIndex: task.skill_index,
+              text: task.text,
+              answerFormat: task.answer_format,
+              options: task.options,
+              correct: task.correct,
+              acceptedAnswers: task.accepted_answers,
+              solution: task.solution,
+              review: null,
+            })),
+          })),
+        )
+      })
+      .catch((error: unknown) =>
+        setSourceError(error instanceof Error ? error.message : 'Не удалось загрузить работу'),
+      )
+      .finally(() => setSourceLoading(false))
+  }, [sourceId, editing])
 
   // Доступна ли генерация. Ошибка запроса = считаем, что нет: ручной путь есть всегда.
   useEffect(() => {
@@ -440,7 +501,8 @@ export default function CreateTestPage() {
     setPublishing(true)
 
     try {
-      const result = await createTest({
+      const save = editTestId !== null ? (payload: Parameters<typeof createTest>[0]) => updateTest(editTestId, payload) : createTest
+      const result = await save({
         title: title.trim(),
         subject: subject.trim(),
         classes,
@@ -450,6 +512,7 @@ export default function CreateTestPage() {
           title: skill.title.trim(),
           tasks_per_variant: skill.tasksPerVariant,
           answer_format: skill.answerFormat,
+          ai_hint: (skill.aiHint ?? '').trim(),
         })),
         variants: variants.map((variant) => ({
           variant_no: variant.variantNo,
@@ -524,7 +587,7 @@ export default function CreateTestPage() {
   if (created !== null) {
     return (
       <main className="page">
-        <h1>Проверочная работа опубликована</h1>
+        <h1>{editTestId !== null ? 'Изменения сохранены' : 'Проверочная работа опубликована'}</h1>
         <p className="lead">
           «{created.title}»: умений {created.skills_count}, вариантов{' '}
           {created.variants_count}, заданий всего {created.tasks_count}.
@@ -577,7 +640,31 @@ export default function CreateTestPage() {
         </Link>
       </p>
 
-      <h1>Создать проверочную работу</h1>
+      <h1>
+        {editTestId !== null
+          ? 'Изменить проверочную работу'
+          : sourceId > 0
+            ? 'Копия проверочной работы'
+            : 'Создать проверочную работу'}
+      </h1>
+      {sourceLoading && <p className="loading">Загружаем работу…</p>}
+      {sourceError !== '' && (
+        <section className="alert alert--error">
+          <p>{sourceError}</p>
+          {editing && sourceId > 0 && (
+            <p>
+              <Link to={`/create?copy=${sourceId}`}>Сделать копию работы</Link> ·{' '}
+              <Link to={`/tests/${sourceId}/results`}>К результатам</Link>
+            </p>
+          )}
+        </section>
+      )}
+      {editTestId !== null && (
+        <p className="hint">
+          Работу ещё никто не начинал, поэтому задания можно поменять. Ссылки классов
+          останутся прежними.
+        </p>
+      )}
       <p className="lead">
         Опишите умения, которые проверяете, — задания по ним составит ИИ или вы сами.
         У каждого ученика будет свой вариант.
@@ -931,6 +1018,20 @@ export default function CreateTestPage() {
             aiEnabled={aiEnabled}
             onRegenerate={handleRegenerate}
             showErrors={submitted}
+            bulk={
+              aiEnabled
+                ? {
+                    context: aiContext,
+                    variantsCount,
+                    onHint: (skillIndex, hint) =>
+                      setSkills((previous) =>
+                        previous.map((skill, index) =>
+                          index === skillIndex - 1 ? { ...skill, aiHint: hint } : skill,
+                        ),
+                      ),
+                  }
+                : undefined
+            }
           />
         </section>
       )}

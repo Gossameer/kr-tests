@@ -23,6 +23,11 @@ export type SkillDraft = {
   /** Сколько заданий на это умение в каждом варианте. */
   tasksPerVariant: number
   answerFormat: AnswerFormat
+  /**
+   * «Уточнение для ИИ»: пожелание учителя к заданиям умения («без логарифмов по
+   * основанию 10»). Учитывается при генерации, догенерации и правках.
+   */
+  aiHint?: string
 }
 
 /** Одно задание конкретного варианта. */
@@ -90,6 +95,7 @@ export type TestCreatePayload = {
     title: string
     tasks_per_variant: number
     answer_format: AnswerFormat
+    ai_hint?: string
   }[]
   variants: {
     variant_no: number
@@ -554,6 +560,40 @@ export type AiStatus = {
 export type AiCellStatus = 'pending' | 'running' | 'checking' | 'ok' | 'failed' | 'interrupted'
 
 /** Задание из результата генерации (поля — как в TaskIn на бэкенде). */
+/** Текущее задание варианта — как его видит правка во всех вариантах. */
+export type BulkTaskIn = {
+  text: string
+  answer_format: AnswerFormat
+  options: string[]
+  correct: number | null
+  accepted_answers: string[]
+  solution: string
+}
+
+/** Одна строка правки во всех вариантах. */
+export type BulkItem = {
+  variant_no: number
+  /** Номер задания внутри умения, с нуля. */
+  order: number
+  status: 'pending' | 'running' | 'checking' | 'ok' | 'failed'
+  before: BulkTaskIn
+  after: AiTask | null
+  error: string
+}
+
+/** Работа как черновик — для копии и правки (GET /api/tests/{id}/draft). */
+export type TestDraft = {
+  id: number
+  title: string
+  subject: string
+  classes: string[]
+  variants_count: number
+  shuffle: boolean
+  skills: { title: string; tasks_per_variant: number; answer_format: AnswerFormat; ai_hint: string }[]
+  variants: { variant_no: number; tasks: (BulkTaskIn & { skill_index: number })[] }[]
+  has_attempts: boolean
+}
+
 export type AiTask = {
   skill_index: number
   text: string
@@ -608,6 +648,8 @@ export type AiJob = {
   }
   cells: AiCell[]
   task: AiTask | null
+  /** Правка во всех вариантах: «было → стало» по каждому заданию. */
+  items: BulkItem[]
 }
 
 export type AiTokens = { prompt_tokens: number; completion_tokens: number }

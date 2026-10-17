@@ -1756,7 +1756,7 @@ def mark_interrupted(job_id: int) -> dict:
     def change(job: dict) -> None:
         if job["status"] != "running":
             return
-        if job["kind"] == "task":
+        if job["kind"] in ("task", "bulk"):
             job["status"] = "failed"
             job["error"] = "Генерация задания прервалась: сервер перезапустили. Нажмите ещё раз."
             return
@@ -1915,6 +1915,8 @@ def job_view(row: dict) -> dict:
         "interrupted": bool(result.get("interrupted")) or count("interrupted") > 0,
         "cells": cells,
         "task": result.get("task"),
+        # Правка во всех вариантах: «было → стало» по каждому заданию.
+        "items": result.get("items", []),
         "needs_review": sum(
             1 for cell in cells for task in cell.get("tasks", []) if task.get("needs_review")
         ),

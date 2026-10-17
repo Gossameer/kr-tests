@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import {
   NETWORK_ERROR,
   SERVER_ERROR,
@@ -852,6 +852,42 @@ export default function ResultsPage() {
           />
         </section>
       )}
+
+      {/* ------------------------- Задания работы ------------------------- */}
+      <section className="card">
+        <h2>Задания работы</h2>
+        {data.attempts.length > 0 ? (
+          <p className="muted">
+            Работу уже писали: исправьте результаты в разборе (добавить ответ / засчитать /
+            исключить) или сделайте копию работы — в ней можно менять задания, в том числе
+            сразу во всех вариантах.
+          </p>
+        ) : (
+          <p className="muted">
+            Работу ещё никто не начинал — задания можно изменить, в том числе сразу во всех
+            вариантах. Ссылки классов останутся прежними.
+          </p>
+        )}
+        <div className="row">
+          {data.attempts.length === 0 ? (
+            <Link className="btn btn--primary" to={`/create?edit=${testId}`}>
+              Изменить задания
+            </Link>
+          ) : (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              disabled
+              title="Работу уже писали — менять задания нельзя"
+            >
+              Изменить задания
+            </button>
+          )}
+          <Link className="btn btn--ghost" to={`/create?copy=${testId}`}>
+            Сделать копию работы
+          </Link>
+        </div>
+      </section>
 
       {/* ------------------------- Опасная зона ------------------------- */}
       <section className="card card--danger">

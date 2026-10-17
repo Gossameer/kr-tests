@@ -197,6 +197,23 @@ export default function SkillEditor({ skills, onChange, showErrors = false }: Pr
                 )}
               </div>
             </div>
+
+            <details className="details skillhint" open={(skill.aiHint ?? '') !== ''}>
+              <summary>Уточнение для ИИ{(skill.aiHint ?? '') !== '' && ' ✓'}</summary>
+              <textarea
+                id={`skill-hint-${index}`}
+                className="textarea"
+                rows={2}
+                value={skill.aiHint ?? ''}
+                onChange={(event) => update(index, { aiHint: event.target.value })}
+                placeholder="Например: только конечный ответ числом; без логарифмов по основанию 10"
+                maxLength={1000}
+              />
+              <p className="hint">
+                Учитывается при генерации, догенерации и правках во всех вариантах. Сюда же
+                сохраняются пожелания из «Изменить во всех вариантах».
+              </p>
+            </details>
           </li>
         ))}
       </ol>
