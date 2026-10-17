@@ -174,6 +174,8 @@ export type PublicTask = {
 export type StartedAttempt = {
   attempt_id: number
   attempt_token: string
+  /** Ссылку открыл вошедший учитель или администратор — попытка пробная. */
+  is_trial?: boolean
   variant_no: number
   student_name: string
   student_class: string
@@ -261,6 +263,8 @@ export type AttemptRow = {
   finished_at: string | null
   /** Учитель разрешил пересдачу: попытка осталась для истории, в итоги не идёт. */
   annulled: boolean
+  /** Пробное прохождение учителя или администратора — в оценки не идёт. */
+  trial: boolean
   /** {id умения: процент выполнения} — основа матрицы «ученик × умение». */
   skill_percents: Record<number, number>
 }

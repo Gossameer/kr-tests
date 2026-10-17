@@ -399,6 +399,8 @@ class StartAttemptOut(BaseModel):
     title: str
     shuffle: bool
     tasks: list[PublicTaskOut]
+    # Ссылку открыл вошедший учитель или администратор: попытка пробная.
+    is_trial: bool = False
 
 
 class AttemptCheckIn(BaseModel):
@@ -473,6 +475,8 @@ class AttemptRow(BaseModel):
     # Учитель разрешил пересдачу: попытка осталась для истории, но в умения,
     # итоги и статистику не идёт.
     annulled: bool = False
+    # Пробное прохождение учителя или администратора — тоже не идёт в оценки.
+    trial: bool = False
     # {id умения: процент выполнения} — основа матрицы «ученик × умение».
     skill_percents: dict[int, int]
 

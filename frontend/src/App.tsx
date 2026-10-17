@@ -136,9 +136,14 @@ function TopBar() {
 }
 
 export default function App() {
+  // Страница ученика (/t/...) — без шапки и меню, даже если в этом браузере вошёл
+  // учитель: только работа, задания и результат.
+  const location = useLocation()
+  const studentPage = location.pathname.startsWith('/t/')
+
   return (
     <div className="app">
-      <TopBar />
+      {!studentPage && <TopBar />}
 
       <Routes>
         {/* Публичное */}

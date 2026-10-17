@@ -263,8 +263,13 @@ def own_test(conn, test_id: int, user: dict) -> dict:
 
 
 def has_attempts(conn, test_id: int) -> bool:
-    """Начинал ли работу хоть один ученик (аннулированные попытки тоже в счёт)."""
-    return conn.execute("SELECT 1 FROM attempts WHERE test_id = %s LIMIT 1", (test_id,)).fetchone() is not None
+    """
+    Начинал ли работу хоть один ученик (аннулированные попытки тоже в счёт).
+    Пробные прохождения учителя не в счёт: при правке они удаляются.
+    """
+    return conn.execute(
+        "SELECT 1 FROM attempts WHERE test_id = %s AND NOT is_trial LIMIT 1", (test_id,)
+    ).fetchone() is not None
 
 
 @router.get("/{test_id}/draft", summary="Работа как черновик (для копии и правки)")
@@ -375,6 +380,8 @@ def update_test(test_id: int, payload: TestCreate, user: dict = Depends(require_
             """,
             (payload.title, payload.subject, payload.classes, payload.shuffle, payload.variants_count, test_id),
         )
+        # Пробные прохождения ссылаются на старые задания — они больше не нужны.
+        conn.execute("DELETE FROM attempts WHERE test_id = %s AND is_trial", (test_id,))
         # Умения уходят вместе с заданиями и вариантами ответа (каскад).
         conn.execute("DELETE FROM skills WHERE test_id = %s", (test_id,))
         insert_content(conn, test_id, payload)
@@ -452,7 +459,7 @@ def my_tests(user: dict = Depends(require_user)) -> list[MyTestRow]:
                    count(a.id) AS attempts_count
             FROM tests t
             LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
-                                AND a.annulled_at IS NULL
+                                AND a.annulled_at IS NULL AND NOT a.is_trial
             WHERE %s OR t.teacher_id = %s
             GROUP BY t.id
             ORDER BY t.created_at DESC, t.id DESC

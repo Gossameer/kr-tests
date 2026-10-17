@@ -529,6 +529,13 @@ export default function StudentTestPage() {
         {attempt.student_name}, {attempt.student_class} · вариант {attempt.variant_no}
       </p>
 
+      {attempt.is_trial && (
+        <p className="trialnote">
+          Пробное прохождение: вы вошли как учитель или администратор. Эта попытка будет видна в
+          результатах с пометкой «пробное», но не войдёт в оценки класса и статистику.
+        </p>
+      )}
+
       <div className="progress" role="status">
         <div className="progress__bar" aria-hidden="true">
           <div

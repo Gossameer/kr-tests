@@ -310,6 +310,12 @@ export async function annulAttempt(testId: number, attemptId: number): Promise<v
   }
 }
 
+/** DELETE /api/tests/{id}/trial-attempts — удалить пробные прохождения. */
+export async function deleteTrialAttempts(testId: number): Promise<{ deleted: number }> {
+  const response = await request(`${API_URL}/api/tests/${testId}/trial-attempts`, { method: 'DELETE' })
+  return parse<{ deleted: number }>(response)
+}
+
 /** DELETE /api/tests/{id}/attempts/{attemptId} — удалить работу ученика. */
 export async function deleteAttempt(testId: number, attemptId: number): Promise<void> {
   const response = await request(`${API_URL}/api/tests/${testId}/attempts/${attemptId}`, {

@@ -57,7 +57,7 @@ TEACHERS_SQL = """
     FROM users u
     LEFT JOIN tests t    ON t.teacher_id = u.id
     LEFT JOIN attempts a ON a.test_id = t.id AND a.finished_at IS NOT NULL
-                        AND a.annulled_at IS NULL
+                        AND a.annulled_at IS NULL AND NOT a.is_trial
     -- Последнее письмо-приглашение этому человеку.
     LEFT JOIN LATERAL (
         SELECT m.created_at, m.status, m.error FROM mail_log m
@@ -449,7 +449,7 @@ def build_stats(user: dict, days: int, subject: str, student_class: str, test_id
 
     # Условие для выборок по работам. Собираем один раз, чтобы фильтры
     # применялись одинаково во всех разрезах.
-    where = ["a.finished_at IS NOT NULL", "a.annulled_at IS NULL"]
+    where = ["a.finished_at IS NOT NULL", "a.annulled_at IS NULL", "NOT a.is_trial"]
     params: list = []
     if own_only:
         where.append("t.teacher_id = %s")
@@ -495,13 +495,13 @@ def build_stats(user: dict, days: int, subject: str, student_class: str, test_id
                 (SELECT count(*) FROM users WHERE role = 'teacher') AS teachers,
                 (SELECT count(*) FROM tests t WHERE {owner})        AS tests,
                 (SELECT count(*) FROM attempts a JOIN tests t ON t.id = a.test_id
-                  WHERE {owner} AND a.annulled_at IS NULL
+                  WHERE {owner} AND a.annulled_at IS NULL AND NOT a.is_trial
                     AND a.finished_at IS NOT NULL)                  AS attempts_total,
                 (SELECT count(*) FROM attempts a JOIN tests t ON t.id = a.test_id
-                  WHERE {owner} AND a.annulled_at IS NULL
+                  WHERE {owner} AND a.annulled_at IS NULL AND NOT a.is_trial
                     AND a.finished_at >= now() - interval '7 days') AS attempts_week,
                 (SELECT count(*) FROM attempts a JOIN tests t ON t.id = a.test_id
-                  WHERE {owner} AND a.annulled_at IS NULL
+                  WHERE {owner} AND a.annulled_at IS NULL AND NOT a.is_trial
                     AND a.finished_at >= now() - interval '30 days') AS attempts_month
             """,
             owner_params,
@@ -603,7 +603,7 @@ def build_stats(user: dict, days: int, subject: str, student_class: str, test_id
             f"""
             SELECT DISTINCT a.student_class FROM attempts a
             JOIN tests t ON t.id = a.test_id
-            WHERE {owner} AND a.annulled_at IS NULL ORDER BY 1
+            WHERE {owner} AND a.annulled_at IS NULL AND NOT a.is_trial ORDER BY 1
             """,
             owner_params,
         ).fetchall()

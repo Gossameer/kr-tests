@@ -369,6 +369,7 @@ def tasks_review(test_id: int = Path(ge=1), user: dict = Depends(require_user)) 
             SELECT ans.task_id, ans.option_id, ans.answer_text, ans.is_correct, a.student_name
             FROM answers ans JOIN attempts a ON a.id = ans.attempt_id
             WHERE a.test_id = %s AND a.finished_at IS NOT NULL AND a.annulled_at IS NULL
+              AND NOT a.is_trial
             """,
             (test_row["id"],),
         ).fetchall()

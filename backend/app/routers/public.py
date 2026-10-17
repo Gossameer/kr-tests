@@ -26,10 +26,11 @@
 import logging
 import secrets
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from psycopg import errors as pg_errors
 
 from app import db
+from app.auth import current_user
 from app.rescoring import is_correct as verdict
 from app.names import name_key
 from app.schemas import (
@@ -150,7 +151,7 @@ def device_attempt(conn, class_id: int, device_id: str, except_id: int = 0) -> d
         """
         SELECT id, student_name FROM attempts
         WHERE class_id = %s AND device_id = %s AND id <> %s
-          AND finished_at IS NOT NULL AND annulled_at IS NULL
+          AND finished_at IS NOT NULL AND annulled_at IS NULL AND NOT is_trial
         ORDER BY id LIMIT 1
         """,
         (class_id, device_id, except_id),
@@ -251,6 +252,7 @@ def get_public_test(
 def start_attempt(
     payload: StartAttemptIn,
     code: str = Path(min_length=4, max_length=32),
+    user: dict | None = Depends(current_user),
 ) -> StartAttemptOut:
     """
     Создаёт попытку и выдаёт вариант ПО ОЧЕРЕДИ: 1, 2, ..., N, снова 1.
@@ -303,7 +305,10 @@ def start_attempt(
                 )
 
         key = name_key(payload.student_name)
-        device_id = payload.device_id if class_id is not None else ""
+        # Ссылку открыл вошедший учитель или администратор — это пробное прохождение:
+        # оно не занимает ФИО ученика, не блокирует устройство и не идёт в оценки.
+        trial = user is not None
+        device_id = payload.device_id if class_id is not None and not trial else ""
 
         def find_own():
             return conn.execute(
@@ -311,9 +316,9 @@ def start_attempt(
                 SELECT id, attempt_token, variant_no, finished_at, student_name
                 FROM attempts
                 WHERE test_id = %s AND student_class = %s AND name_key = %s
-                  AND annulled_at IS NULL
+                  AND annulled_at IS NULL AND is_trial = %s
                 """,
-                (test_id, student_class, key),
+                (test_id, student_class, key, trial),
             ).fetchone()
 
         # --- Ученик уже начинал? ------------------------------------------
@@ -339,12 +344,24 @@ def start_attempt(
                 title=test_row["title"],
                 shuffle=test_row["shuffle"],
                 tasks=load_variant_tasks(conn, test_id, existing["variant_no"]),
+                is_trial=trial,
             )
 
         # --- Новая попытка -------------------------------------------------
         try:
             with conn.transaction():
-                if class_id is not None:
+                if trial:
+                    # Пробное прохождение не сдвигает очередь вариантов класса.
+                    counter_row = conn.execute(
+                        """
+                        SELECT coalesce(
+                            (SELECT variant_counter FROM test_classes WHERE id = %s),
+                            (SELECT variant_counter FROM tests WHERE id = %s)
+                        ) + 1 AS variant_counter
+                        """,
+                        (class_id, test_id),
+                    ).fetchone()
+                elif class_id is not None:
                     counter_row = conn.execute(
                         """
                         UPDATE test_classes
@@ -381,10 +398,10 @@ def start_attempt(
                     """
                     INSERT INTO attempts (
                         test_id, student_name, student_class, name_key,
-                        class_id, device_id,
+                        class_id, device_id, is_trial,
                         variant_no, attempt_token, max_score
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -394,6 +411,7 @@ def start_attempt(
                         key,
                         class_id,
                         device_id,
+                        trial,
                         variant_no,
                         attempt_token,
                         len(tasks),
@@ -419,6 +437,7 @@ def start_attempt(
                 title=test_row["title"],
                 shuffle=test_row["shuffle"],
                 tasks=load_variant_tasks(conn, test_id, again["variant_no"]),
+                is_trial=trial,
             )
 
     logger.info(
@@ -437,6 +456,7 @@ def start_attempt(
         title=test_row["title"],
         shuffle=test_row["shuffle"],
         tasks=tasks,
+        is_trial=trial,
     )
 
 

@@ -19,6 +19,7 @@ import {
   addTestClass,
   annulAttempt,
   deleteAttempt,
+  deleteTrialAttempts,
   deleteTest,
   fetchAttemptDetail,
   fetchResults,
@@ -189,8 +190,11 @@ export default function ResultsPage() {
     }
     return loading.data.attempts.filter((attempt) => attempt.student_class === classFilter)
   }, [loading, classFilter])
-  // В умения и итоги идут только действующие попытки: аннулированные — нет.
-  const counted = useMemo(() => shown.filter((attempt) => !attempt.annulled), [shown])
+  // В умения и итоги идут только действующие попытки: аннулированные и пробные — нет.
+  const counted = useMemo(
+    () => shown.filter((attempt) => !attempt.annulled && !attempt.trial),
+    [shown],
+  )
 
   /** Правка задания пересчитала работы — перечитываем всё, что от неё зависит. */
   function handleReviewed() {
@@ -299,6 +303,24 @@ export default function ResultsPage() {
       load()
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : 'Не удалось разрешить пересдачу')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleDeleteTrials() {
+    if (!window.confirm('Удалить все пробные прохождения этой работы? Работы учеников не затронуты.')) {
+      return
+    }
+    setBusy(true)
+    setActionError('')
+    try {
+      await deleteTrialAttempts(testId)
+      setOpenAttemptId(null)
+      setDetails({})
+      load()
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : 'Не удалось удалить пробные прохождения')
     } finally {
       setBusy(false)
     }
@@ -684,6 +706,16 @@ export default function ResultsPage() {
         ) : (
           <>
             <p className="muted">Нажмите на строку, чтобы посмотреть разбор работы.</p>
+            {shown.some((attempt) => attempt.trial) && (
+              <div className="row row--tight">
+                <span className="hint">
+                  Пробные прохождения (ссылку открыл вошедший учитель) в оценки не идут.
+                </span>
+                <button type="button" className="btn btn--small btn--ghost" onClick={() => void handleDeleteTrials()} disabled={busy}>
+                  Удалить пробные прохождения
+                </button>
+              </div>
+            )}
             <div className="table-scroll">
               <table className="table">
                 <thead>
@@ -708,7 +740,7 @@ export default function ResultsPage() {
                         className={
                           'table__row' +
                           (isOpen ? ' table__row--open' : '') +
-                          (attempt.annulled ? ' table__row--annulled' : '')
+                          (attempt.annulled || attempt.trial ? ' table__row--annulled' : '')
                         }
                         onClick={() => handleRowClick(attempt.attempt_id)}
                       >
@@ -716,6 +748,14 @@ export default function ResultsPage() {
                         <td>
                           <span className="caret">{isOpen ? '▾' : '▸'}</span>{' '}
                           {attempt.student_name}
+                          {attempt.trial && (
+                            <span
+                              className="badge"
+                              title="Ссылку открыл вошедший учитель или администратор: в оценки, умения и статистику не идёт"
+                            >
+                              пробное прохождение
+                            </span>
+                          )}
                           {attempt.annulled && (
                             <span
                               className="badge badge--closed"
@@ -733,7 +773,7 @@ export default function ResultsPage() {
                         <td>{formatDateTime(attempt.finished_at)}</td>
                         <td>
                           <div className="rowactions">
-                          {!attempt.annulled && (
+                          {!attempt.annulled && !attempt.trial && (
                             <button
                               type="button"
                               className="btn btn--small btn--ghost"
@@ -856,7 +896,7 @@ export default function ResultsPage() {
       {/* ------------------------- Задания работы ------------------------- */}
       <section className="card">
         <h2>Задания работы</h2>
-        {data.attempts.length > 0 ? (
+        {data.attempts.some((attempt) => !attempt.trial) ? (
           <p className="muted">
             Работу уже писали: исправьте результаты в разборе (добавить ответ / засчитать /
             исключить) или сделайте копию работы — в ней можно менять задания, в том числе
@@ -869,7 +909,7 @@ export default function ResultsPage() {
           </p>
         )}
         <div className="row">
-          {data.attempts.length === 0 ? (
+          {!data.attempts.some((attempt) => !attempt.trial) ? (
             <Link className="btn btn--primary" to={`/create?edit=${testId}`}>
               Изменить задания
             </Link>

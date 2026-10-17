@@ -99,7 +99,8 @@ def load_class_links(conn, test_id: int) -> list[dict]:
         SELECT tc.id, tc.class_name, tc.code, tc.is_open,
                (SELECT count(*) FROM attempts a
                  WHERE a.test_id = tc.test_id AND a.student_class = tc.class_name
-                   AND a.finished_at IS NOT NULL AND a.annulled_at IS NULL) AS attempts_count
+                   AND a.finished_at IS NOT NULL AND a.annulled_at IS NULL
+                   AND NOT a.is_trial) AS attempts_count
         FROM test_classes tc
         WHERE tc.test_id = %s
         ORDER BY tc.id
@@ -129,10 +130,10 @@ def load_attempts(conn, test_id: int) -> list[dict]:
     return conn.execute(
         """
         SELECT id, student_name, student_class, variant_no,
-               score, max_score, finished_at, annulled_at IS NOT NULL AS annulled
+               score, max_score, finished_at, annulled_at IS NOT NULL AS annulled, is_trial AS trial
         FROM attempts
         WHERE test_id = %s
-        ORDER BY student_class, student_name, annulled_at IS NOT NULL, id
+        ORDER BY is_trial, student_class, student_name, annulled_at IS NOT NULL, id
         """,
         (test_id,),
     ).fetchall()
@@ -155,7 +156,7 @@ def load_skill_matrix(conn, test_id: int) -> dict[tuple[int, int], dict]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT t.excluded
+        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT att.is_trial AND NOT t.excluded
         GROUP BY ans.attempt_id, t.skill_id
         """,
         (test_id,),
@@ -180,7 +181,7 @@ def load_skill_stats(conn, test_id: int, skills: list[dict]) -> list[dict]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT t.excluded
+        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT att.is_trial AND NOT t.excluded
         GROUP BY t.skill_id
         """,
         (test_id,),
@@ -249,6 +250,7 @@ def get_results(
                 "percent": percent_of(attempt["score"], attempt["max_score"]),
                 "finished_at": attempt["finished_at"],
                 "annulled": attempt["annulled"],
+                "trial": attempt["trial"],
                 "skill_percents": skill_percents,
             }
         )
@@ -265,7 +267,7 @@ def get_results(
         links_by_class=test_row["links_by_class"],
         class_links=class_links,
         skills=skills,
-        attempts_count=sum(1 for attempt in attempts if not attempt["annulled"]),
+        attempts_count=sum(1 for attempt in attempts if not attempt["annulled"] and not attempt["trial"]),
         attempts=attempts,
         skill_stats=skill_stats,
     )
@@ -431,7 +433,7 @@ def load_task_marks(conn, test_id: int) -> dict[int, dict[int, bool | None]]:
         FROM answers ans
         JOIN tasks t      ON t.id = ans.task_id
         JOIN attempts att ON att.id = ans.attempt_id
-        WHERE att.test_id = %s AND att.annulled_at IS NULL
+        WHERE att.test_id = %s AND att.annulled_at IS NULL AND NOT att.is_trial
         """,
         (test_id,),
     ).fetchall()
@@ -577,7 +579,7 @@ def export_results(
         attempts = [
             attempt
             for attempt in load_attempts(conn, test_id)
-            if not attempt["annulled"] and attempt["finished_at"] is not None
+            if not attempt["annulled"] and not attempt["trial"] and attempt["finished_at"] is not None
         ]
         matrix = load_skill_matrix(conn, test_id)
         marks = load_task_marks(conn, test_id)
@@ -599,7 +601,7 @@ def export_results(
                 SELECT a.id, a.task_id, a.is_correct
                 FROM answers a
                 JOIN attempts att ON att.id = a.attempt_id
-                WHERE att.annulled_at IS NULL AND att.finished_at IS NOT NULL
+                WHERE att.annulled_at IS NULL AND NOT att.is_trial AND att.finished_at IS NOT NULL
             ) ans ON ans.task_id = t.id
             WHERE t.test_id = %s
             GROUP BY t.id, t.variant_no, t.position, t.text, t.answer_format,
@@ -777,6 +779,27 @@ def annul_attempt(
         user["email"],
     )
     return {"attempt_id": attempt_id, "annulled": True}
+
+
+@router.delete(
+    "/{test_id}/trial-attempts",
+    summary="Удалить пробные прохождения",
+)
+def delete_trial_attempts(test_id: int = Path(ge=1), user: dict = Depends(require_user)) -> dict:
+    """Пробные прохождения учителей и администраторов удаляются вместе с ответами."""
+    try:
+        pool = db.get_pool()
+    except Exception as exc:  # noqa: BLE001
+        raise db_unavailable() from exc
+
+    with pool.connection() as conn:
+        test_row = load_test_for_user(conn, test_id, user)
+        deleted = conn.execute(
+            "DELETE FROM attempts WHERE test_id = %s AND is_trial", (test_row["id"],)
+        ).rowcount
+
+    logger.info("Удалены пробные прохождения работы %s: %s", test_row["share_token"], deleted)
+    return {"deleted": deleted}
 
 
 @router.delete(
