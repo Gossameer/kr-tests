@@ -100,6 +100,59 @@ class AutoChecks(unittest.TestCase):
         reason = gen.short_reason(text)
         self.assertTrue(reason.endswith("…") and len(reason) <= 161 and "слов…" not in reason)
 
+    def test_issues_found_in_subject_run(self) -> None:
+        # Всё ниже — настоящие ответы ИИ из проверочного прогона по предметам.
+        bold = task("Определите падеж выделенного существительного: «Дети гуляли по <b>аллее</b>». "
+                    "Ответ запишите одним словом.", ["дательный"])
+        self.assertIn("HTML-разметка", warning(bold, "русский язык"))
+
+        units = task("Велосипедист двигался со скоростью $15$ км/ч. Какой путь он преодолел за $2$ часа? "
+                     "Ответ запишите целым числом.", ["30"])
+        self.assertIn("не указано, в каких единицах записать ответ", warning(units, "физика"))
+        with_units = task("Велосипедист двигался со скоростью $15$ км/ч. Какой путь он преодолел за $2$ часа? "
+                          "Ответ дайте в километрах, запишите только число.", ["30"])
+        self.assertEqual(warning(with_units, "физика"), "")
+        binary = task("Переведите $1011_2$ в десятичную систему. Ответ запишите целым числом.", ["11"])
+        self.assertEqual(warning(binary, "информатика"), "")
+
+        odd = task(
+            "Все, кроме одной, относятся к функциям государства. Найдите и запишите термин, "
+            "который выпадает из ряда.\n\n1) Оборона страны\n2) Сбор налогов\n"
+            "3) Изготовление бытовой техники\n\nОтвет запишите одним словом в именительном падеже.",
+            ["производство"],
+        )
+        self.assertIn("ответа нет в перечне", warning(odd, "обществознание"))
+
+    def test_issues_after_prompt_fix(self) -> None:
+        # Настоящие ответы ИИ после правки промта: модель всё ещё так делает.
+        highlighted = task("Определите падеж выделенного слова в предложении: «Ученики слушали учителя». "
+                           "Ответ запишите одним словом в именительном падеже.", ["винительный"])
+        self.assertIn("выделенное слово", warning(highlighted, "русский язык"))
+        odd = task("Все они, за исключением одной, являются признаками государства. Найдите и запишите "
+                   "слово, обозначающее признак, выпадающий из этого ряда: публичная власть, суверенитет, "
+                   "наличие политической партии. Ответ запишите одним словом.", ["партия"])
+        self.assertIn("«найдите лишнее» с вводом", warning(odd, "обществознание"))
+
+    def test_missing_format_hint_is_added_when_unambiguous(self) -> None:
+        geo = gen.add_format_hint(task("Самый большой океан Земли. Назовите этот океан", ["Тихий", "Тихий океан"]))
+        self.assertTrue(geo["text"].endswith("Назовите этот океан. Ответ запишите одним словом."))
+        self.assertEqual(warning(geo, "география"), "")
+        number = gen.add_format_hint(task("Сколько будет $2^5$?", ["32"]))
+        self.assertTrue(number["text"].endswith("? Ответ запишите целым числом."))
+        decimal = gen.add_format_hint(task("Вычислите $5 : 2$.", ["2,5", "2.5"]))
+        self.assertIn("дробную часть отделяйте запятой", decimal["text"])
+        # Уже есть подпись — не трогаем; длинный ответ — не угадываем.
+        kept = task("Сколько? Ответ запишите числом.", ["3"])
+        self.assertEqual(gen.add_format_hint(kept)["text"], kept["text"])
+        phrase = task("Кто автор «Евгения Онегина»?", ["Александр Пушкин"])
+        self.assertEqual(gen.add_format_hint(phrase)["text"], phrase["text"])
+        # Через разбор ответа ИИ подпись появляется сама.
+        raw = '{"variants": [{"variant": 1, "tasks": [{"text": "Назовите самый холодный материк", ' \
+              '"format": "input", "answers": ["Антарктида"], "solution": "Антарктида."}]}]}'
+        skill = {"title": "Материки", "tasks_per_variant": 1, "answer_format": "input"}
+        ready, _ = gen.parse_skill_answer(raw, skill, 1, [1], set())
+        self.assertEqual(ready[1][0]["text"], "Назовите самый холодный материк. Ответ запишите одним словом.")
+
     def test_choice_needs_no_format_hint(self) -> None:
         self.assertEqual(warning(task("Промежуток области определения $y=\\log_9(5-x)$?",
                                       options=["$(-\\infty; 5)$", "$(5; +\\infty)$"])), "")
@@ -130,6 +183,10 @@ class Prompts(unittest.TestCase):
                 "вопросов на мнение",
                 "общеизвестные школьные",
                 "без черновых рассуждений",
+                "«Тихий» и «Тихий океан»",
+                "Ответ дайте в километрах, запишите только число.",
+                "найдите лишнее в перечне",
+                "без HTML и markdown",
                 "перечисли в \"answers\" ВСЕ",
             ):
                 self.assertIn(piece, prompt)

@@ -180,7 +180,16 @@ STRESS_INPUT = (
 QUALITY_RULES = [
     "формат «ввод» — только когда правильный ответ ОДИН и короткий (число, слово, дата, термин) "
     "и записать его можно однозначно; если у ответа несколько верных записей (синонимы, "
-    "варианты написания, don't и do not, 0,5 и 0.5) — перечисли в \"answers\" ВСЕ",
+    "варианты написания, краткая и полная форма: «дательный» и «дательный падеж», «Тихий» и "
+    "«Тихий океан», don't и do not, 0,5 и 0.5) — перечисли в \"answers\" ВСЕ",
+    "если у числового ответа есть единица измерения, назови её в тексте и попроси записать "
+    "только число: «Ответ дайте в километрах, запишите только число.»",
+    "заданий «найдите лишнее в перечне / выпишите термин из списка» с вводом не составляй — это "
+    "задание на выбор; если в задании с вводом есть перечень, ответ должен быть словом из "
+    "перечня дословно",
+    "текст без HTML и markdown (никаких <b>, **, _); выделить слово на экране нельзя — не пиши "
+    "«выделенное слово», а называй его прямо в кавычках: «Определите падеж слова «аллее» в "
+    "предложении…»",
     "в математике, физике, химии и информатике ответ для ввода — ОДНО конечное число (целое "
     "или десятичная дробь); бесконечность, промежутки, множества, «нет решений», несколько "
     "ответов — не для ввода: переформулируй задачу так, чтобы ответом было одно число "
@@ -589,6 +598,29 @@ def validate_tasks(skills: list[dict], tasks: list[dict]) -> list[dict]:
     return result
 
 
+def add_format_hint(task: dict) -> dict:
+    """
+    Модель иногда забывает дописать, как записать ответ. Если ответ — одно число или
+    одно слово, подпись однозначна, и её проще поставить самим, чем отправлять
+    задание учителю на проверку. Сложные случаи не трогаем — их пометит task_warning.
+    """
+    if task["answer_format"] != "input" or FORMAT_HINT_RE.search(plain_text(task["text"])):
+        return task
+    answers = [plain_text(answer).strip() for answer in task["accepted_answers"]]
+    if not answers:
+        return task
+    if all(re.fullmatch(r"-?\d+", answer.replace(" ", "")) for answer in answers):
+        hint = "Ответ запишите целым числом."
+    elif all(NUMBER_RE.fullmatch(answer.replace(" ", "")) for answer in answers):
+        hint = "Ответ запишите числом; дробную часть отделяйте запятой."
+    elif len(answers[0].split()) == 1 and not UNCLEAR_ANSWER_RE.search(answers[0]):
+        hint = "Ответ запишите одним словом."
+    else:
+        return task
+    text = task["text"].rstrip()
+    return {**task, "text": f"{text}{'' if text.endswith(('.', '?', '!')) else '.'} {hint}"}
+
+
 def parse_skill_answer(
     raw: str,
     skill: dict,
@@ -655,6 +687,7 @@ def parse_skill_answer(
             continue
 
         seen.update(keys)
+        tasks = [add_format_hint(task) for task in tasks]
         for task in tasks:
             task["skill_index"] = skill_index
         ready[number] = tasks
@@ -674,7 +707,7 @@ def parse_single_task(raw: str, skill: dict, avoid: set[str]) -> dict:
 
     if normalize_text(task["text"]) in avoid:
         raise VariantProblem("новое задание повторяет уже существующее")
-    return task
+    return add_format_hint(task)
 
 
 # =====================================================================
@@ -835,6 +868,29 @@ FORMAT_HINT_RE = re.compile(
     r"сантиметр|метр|грамм|литр|секунд|рубл|процент|форм[еуы]|в\s+виде|латиниц|английск)",
     re.IGNORECASE,
 )
+# HTML или markdown в тексте: ученик увидит «<b>аллее</b>» как есть.
+MARKUP_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*\s*/?>|\*\*[^*]+\*\*")
+# Единица измерения рядом с числом в условии: «15 км/ч», «2 часа», «$160$ км».
+# Однобуквенные «в», «с», «к» и «г» не берём: это предлоги и «г.» (год) после числа.
+UNIT_IN_TEXT_RE = re.compile(
+    r"\d\$?\s*(км/ч|м/с|км|см|мм|кг|мг|м|ч|мин|л|мл|°C|руб|кВт|Вт|Дж|Па|Ом|%)(?![а-яА-Яa-zA-Z])"
+)
+# В подсказке о записи ответа названа единица («в километрах», «в км/ч») или «только число».
+UNIT_IN_HINT_RE = re.compile(
+    r"\bв\s+(км|м|см|мм|кг|г|ч|мин|с|л|мл|градус|процент|рубл|километр|метр|сантиметр|"
+    r"миллиметр|килограмм|грамм|час|минут|секунд|литр|джоул|ньютон|паскал|ватт|вольт|ампер)|"
+    r"единиц|только\s+числ|без\s+единиц",
+    re.IGNORECASE,
+)
+# «Выделенное слово»: выделить на экране нельзя, ученик не поймёт, о каком слове речь.
+HIGHLIGHT_RE = re.compile(r"выделенн|подчёркнут|подчеркнут|выделено\s+жирн", re.IGNORECASE)
+# «Найдите лишнее в ряду и запишите» — по сути выбор; вводом ученик не угадает формулировку.
+ODD_ONE_RE = re.compile(r"выпада\w*\s+из\s+(этого\s+)?ряда|лишн\w*\s+(слово|термин|понятие)|"
+                        r"за\s+исключением\s+одно", re.IGNORECASE)
+# Перечень в условии: «1) …», «2) …» на отдельных строках.
+LIST_ITEM_RE = re.compile(r"(^|\n)\s*\d+[).]\s+\S", re.MULTILINE)
+
+
 # Черновик в решении: модель передумывала по ходу («Переформулируем…», «Давайте лучше…»).
 DRAFT_SOLUTION_RE = re.compile(
     r"переформулир|давайте|лучше\s+так|лучше:|исправ(им|лю)|на\s+самом\s+деле|"
@@ -878,24 +934,41 @@ def format_warnings(task: dict, subject: str = "") -> list[str]:
     """
     warnings: list[str] = []
     text = plain_text(task["text"])
+    if any(MARKUP_RE.search(piece) for piece in (task["text"], *task["options"])):
+        warnings.append("в тексте HTML-разметка — ученик увидит теги")
     if MISSING_PICTURE_RE.search(text):
         warnings.append("ссылка на рисунок, которого нет")
     if OPINION_RE.search(text):
         warnings.append("вопрос на мнение — автоматически не проверить")
+    if HIGHLIGHT_RE.search(text):
+        warnings.append("в условии «выделенное слово», а выделить на экране нельзя — назовите слово")
     if DRAFT_SOLUTION_RE.search(plain_text(task.get("solution", ""))):
         warnings.append("в решении черновые рассуждения — проверьте, сходится ли оно с ответом")
     if task["answer_format"] != "input":
         return warnings
 
     answers = task["accepted_answers"]
+    if ODD_ONE_RE.search(text):
+        warnings.append("«найдите лишнее» с вводом — ученик не угадает формулировку; сделайте выбор")
     if any(UNCLEAR_ANSWER_RE.search(plain_text(answer)) for answer in answers) or (
         is_math_subject(subject) and not all(numeric_answer(answer, text) for answer in answers)
     ):
         warnings.append("ученик не поймёт, как записать ответ")
     elif any(len(plain_text(answer).split()) > 4 for answer in answers):
         warnings.append("ответ длиннее нескольких слов — вводом его не проверить")
-    if not FORMAT_HINT_RE.search(text):
+    hint = FORMAT_HINT_RE.search(text)
+    if not hint:
         warnings.append("не указано, как записать ответ")
+    elif (
+        all(numeric_answer(answer, text) for answer in answers)
+        and UNIT_IN_TEXT_RE.search(task["text"])
+        and not UNIT_IN_HINT_RE.search(text[hint.start():])
+    ):
+        warnings.append("не указано, в каких единицах записать ответ")
+    if LIST_ITEM_RE.search(task["text"]) and not any(
+        _in_text(answer, text) for answer in answers if not NUMBER_RE.fullmatch(answer.strip())
+    ) and not all(NUMBER_RE.fullmatch(answer.strip()) for answer in answers):
+        warnings.append("ответа нет в перечне — ученик не поймёт, что записать")
     return warnings
 
 
@@ -941,6 +1014,9 @@ def solution_messages(request: dict, task: dict) -> list[dict]:
         "2) факты (даты, имена, события, термины) точны и общеизвестны в школьном курсе. "
         "Ошибки в вычислениях и рассуждениях — это пункт 1, не пункт 2; если фактов в "
         "задании нет, facts_ok = true.\n"
+        "3) ученик по одному условию поймёт, что именно и в каком виде записать, и его верный "
+        "ответ совпадёт с указанным (если ответ — слово из перечня в условии, оно есть там "
+        "дословно). Если нет — это тоже solution_ok = false.\n"
         'Верни ТОЛЬКО JSON: {"solution_ok": true или false, "solution_problem": "что не так, '
         'одной фразой, или пустая строка", "facts_ok": true или false, "facts_problem": '
         '"какой факт сомнителен, или пустая строка"}'
